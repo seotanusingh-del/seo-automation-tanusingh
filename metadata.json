@@ -1,0 +1,6 @@
+{
+  "name": "SEO Document Studio",
+  "description": "Multi-airline SEO document generator, TFN replacer, link concatenator, airline content generator, and SERP rank checker.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
