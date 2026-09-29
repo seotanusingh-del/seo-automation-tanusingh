@@ -68,6 +68,7 @@ import { RankCheckerPanel } from './components/RankCheckerPanel';
 import { SettingsAndGuidePanel } from './components/SettingsAndGuidePanel';
 import { SeoBulkAutomationPanel } from './components/SeoBulkAutomationPanel';
 import { LoginScreen } from './components/LoginScreen';
+import { DEFAULT_TANU_AVATAR_DATA_URI } from './lib/defaultAvatar';
 
 type TopTab =
   | 'home'
@@ -131,10 +132,12 @@ export default function App() {
     return localStorage.getItem('seo_user_display_name') || 'TANU SINGH';
   });
   const [userAvatarUrl, setUserAvatarUrl] = useState<string>(() => {
-    return (
-      localStorage.getItem('seo_user_avatar_url') ||
-      '/src/assets/images/tanu_singh_avatar_1790678043096.jpg'
-    );
+    const saved = localStorage.getItem('seo_user_avatar_url');
+    if (!saved || saved.startsWith('/src/assets/')) {
+      localStorage.removeItem('seo_user_avatar_url');
+      return DEFAULT_TANU_AVATAR_DATA_URI;
+    }
+    return saved;
   });
   const [defaultOldTfn, setDefaultOldTfn] = useState<string>(() => {
     return localStorage.getItem('seo_default_old_tfn') || DEFAULT_OLD_TFN;
@@ -993,9 +996,13 @@ export default function App() {
             className="flex items-center gap-3 min-w-0 text-left cursor-pointer"
           >
             <img
-              src={userAvatarUrl}
+              src={userAvatarUrl || DEFAULT_TANU_AVATAR_DATA_URI}
               alt={userName}
               referrerPolicy="no-referrer"
+              onError={(e) => {
+                e.currentTarget.onerror = null;
+                e.currentTarget.src = DEFAULT_TANU_AVATAR_DATA_URI;
+              }}
               className="w-10 h-10 rounded-full object-cover border-2 border-blue-600 shadow-xs shrink-0"
             />
             {(!sidebarCollapsed || mobileMenuOpen) && (
@@ -1131,9 +1138,13 @@ export default function App() {
           <div className="flex items-center gap-2.5 shrink-0">
             <div className="hidden sm:flex items-center gap-2 pr-2 border-r border-slate-200">
               <img
-                src={userAvatarUrl}
+                src={userAvatarUrl || DEFAULT_TANU_AVATAR_DATA_URI}
                 alt={userName}
                 referrerPolicy="no-referrer"
+                onError={(e) => {
+                  e.currentTarget.onerror = null;
+                  e.currentTarget.src = DEFAULT_TANU_AVATAR_DATA_URI;
+                }}
                 className="w-7 h-7 rounded-full object-cover border border-blue-500"
               />
               <span className="text-xs font-bold text-slate-800">

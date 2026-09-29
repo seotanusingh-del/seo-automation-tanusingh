@@ -28,6 +28,7 @@ import {
   buildGoogleDocUrl,
   extractGoogleDocId,
 } from '../lib/seoHelpers';
+import { DEFAULT_TANU_AVATAR_DATA_URI } from '../lib/defaultAvatar';
 
 interface SettingsAndGuidePanelProps {
   credentials: ServiceAccountCredentials;
@@ -63,6 +64,7 @@ export const SettingsAndGuidePanel: React.FC<SettingsAndGuidePanelProps> = ({
   onResetAllDefaultValues,
   userName = 'TANU SINGH',
   onChangeUserName,
+  userAvatarUrl = DEFAULT_TANU_AVATAR_DATA_URI,
   onChangeUserAvatar,
 }) => {
   const [formCreds, setFormCreds] =
@@ -74,6 +76,7 @@ export const SettingsAndGuidePanel: React.FC<SettingsAndGuidePanelProps> = ({
     defaultReplacementWord
   );
   const [profileNameInput, setProfileNameInput] = useState<string>(userName);
+  const [githubAvatarUrlInput, setGithubAvatarUrlInput] = useState<string>('');
 
   const [statusMsg, setStatusMsg] = useState(
     'Ready. Upload a Google Cloud JSON key file to auto-fetch keys, or update default TFN & Google Doc values below.'
@@ -495,14 +498,24 @@ export const SettingsAndGuidePanel: React.FC<SettingsAndGuidePanelProps> = ({
               </button>
 
               {onChangeUserName && (
-                <div className="flex items-center gap-2 pl-2 border-l border-slate-200">
+                <div className="flex flex-wrap items-center gap-2 pl-2 border-l border-slate-200">
+                  <img
+                    src={userAvatarUrl || DEFAULT_TANU_AVATAR_DATA_URI}
+                    alt={userName}
+                    referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      e.currentTarget.onerror = null;
+                      e.currentTarget.src = DEFAULT_TANU_AVATAR_DATA_URI;
+                    }}
+                    className="w-9 h-9 rounded-full object-cover border-2 border-blue-600 shrink-0"
+                  />
                   <UserCheck className="w-4 h-4 text-blue-600" />
                   <input
                     type="text"
                     value={profileNameInput}
                     onChange={(e) => setProfileNameInput(e.target.value)}
                     placeholder="User Name (TANU SINGH)"
-                    className="h-9 px-3 rounded-lg border border-slate-300 text-xs font-bold text-slate-800 w-40"
+                    className="h-9 px-3 rounded-lg border border-slate-300 text-xs font-bold text-slate-800 w-36"
                   />
                   <button
                     type="button"
@@ -527,7 +540,47 @@ export const SettingsAndGuidePanel: React.FC<SettingsAndGuidePanelProps> = ({
                     onClick={() => avatarFileInputRef.current?.click()}
                     className="h-9 px-3 bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 text-xs font-semibold rounded-lg cursor-pointer"
                   >
-                    Change User Photo
+                    Upload Photo
+                  </button>
+                  <input
+                    type="text"
+                    value={githubAvatarUrlInput}
+                    onChange={(e) => setGithubAvatarUrlInput(e.target.value)}
+                    placeholder="Or paste GitHub / Image URL..."
+                    className="h-9 px-3 rounded-lg border border-slate-300 text-xs font-mono text-slate-800 w-48"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!onChangeUserAvatar) return;
+                      let rawUrl = githubAvatarUrlInput.trim();
+                      if (!rawUrl) return;
+                      // Automatically convert standard GitHub blob URLs to raw.githubusercontent.com
+                      const ghMatch = rawUrl.match(
+                        /^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/(.+)$/i
+                      );
+                      if (ghMatch) {
+                        rawUrl = `https://raw.githubusercontent.com/${ghMatch[1]}/${ghMatch[2]}/${ghMatch[3].replace(/\?raw=true$/i, '')}`;
+                      }
+                      onChangeUserAvatar(rawUrl);
+                      setGithubAvatarUrlInput('');
+                      setStatusMsg('Updated user profile icon from URL!');
+                    }}
+                    className="h-9 px-3 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 text-xs font-semibold rounded-lg cursor-pointer"
+                  >
+                    Set Image URL
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!onChangeUserAvatar) return;
+                      localStorage.removeItem('seo_user_avatar_url');
+                      onChangeUserAvatar(DEFAULT_TANU_AVATAR_DATA_URI);
+                      setStatusMsg('Restored default Tanu Singh profile icon!');
+                    }}
+                    className="h-9 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg cursor-pointer"
+                  >
+                    Reset Default Photo
                   </button>
                 </div>
               )}
