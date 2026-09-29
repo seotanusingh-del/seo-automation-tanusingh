@@ -251,7 +251,17 @@ app.post('/api/sync-google-doc', async (req, res) => {
           docxBase64 = Buffer.from(exportRes.data as ArrayBuffer).toString('base64');
         }
       } catch {
-        // Ignore Drive export error if text succeeded
+        // Fallback to direct Google Docs DOCX export URL
+        try {
+          const docxUrl = `https://docs.google.com/document/d/${cleanDocId}/export?format=docx`;
+          const docxRes = await fetch(docxUrl);
+          if (docxRes.ok) {
+            const arrBuf = await docxRes.arrayBuffer();
+            docxBase64 = Buffer.from(arrBuf).toString('base64');
+          }
+        } catch {
+          // Ignore if direct export also fails
+        }
       }
     } catch (serviceAccountErr) {
       // Fallback: if the user pasted a public Google Doc link ("Anyone with the link"),
