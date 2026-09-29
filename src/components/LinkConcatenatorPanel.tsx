@@ -109,11 +109,46 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
     'Ready. Enter Prefix and Suffix above to concatenate links, or use Bulk Add.'
   );
   const [copiedId, setCopiedId] = useState<number | null>(null);
-  const [autoSync, setAutoSync] = useState(false);
+  const [autoSync, setAutoSync] = useState<boolean>(() => {
+    return localStorage.getItem('seo_concat_auto_sync') !== 'false';
+  });
   const [isSyncing, setIsSyncing] = useState(false);
+  const [savedSheetFlash, setSavedSheetFlash] = useState(false);
+  const [exportedFlash, setExportedFlash] = useState(false);
+  const [addedRowFlash, setAddedRowFlash] = useState(false);
+  const [showLocationModal, setShowLocationModal] = useState(false);
   const [editingRow, setEditingRow] = useState<ConcatRowItem | null>(null);
   const [editSuffixValue, setEditSuffixValue] = useState('');
   const suffixInputRef = useRef<HTMLInputElement>(null);
+
+  // Pull globally saved Google Sheet configuration on mount so Mac & Phone stay in sync
+  useEffect(() => {
+    fetch('/api/workspace-config')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((cfg) => {
+        if (cfg && cfg.updatedAt > 0) {
+          if (cfg.googleSheetUrl) {
+            setSheetUrlInput(cfg.googleSheetUrl);
+            localStorage.setItem('seo_google_sheet_url', cfg.googleSheetUrl);
+          }
+          if (cfg.sheetTabName) {
+            setSheetTabName(cfg.sheetTabName);
+            localStorage.setItem('seo_google_sheet_tab', cfg.sheetTabName);
+          }
+          if (cfg.sheetColumn) {
+            setSheetColumn(cfg.sheetColumn);
+            localStorage.setItem('seo_google_sheet_col', cfg.sheetColumn);
+          }
+          if (cfg.sheetStartRow) {
+            setSheetStartRow(Number(cfg.sheetStartRow));
+            localStorage.setItem('seo_google_sheet_start_row', String(cfg.sheetStartRow));
+          }
+        }
+      })
+      .catch(() => {
+        // ignore offline
+      });
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('seo_concat_prefix', prefix);
@@ -167,7 +202,7 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
     };
   }, [sheetTabName, sheetColumn, sheetStartRow, rows.length, includePrefixSuffixCols]);
 
-  const handleCheckSheetInfo = async () => {
+  const handleCheckSheetInfo = async (openLocationPrompt = false) => {
     setIsCheckingSheet(true);
     setStatus(`Checking Google Sheet (${cleanSheetId})...`);
     try {
@@ -191,16 +226,49 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
         }
       }
       setStatus(
-        `Verified Google Sheet: "${data.title}" · Tabs found: ${
-          data.sheetTabs.join(', ') || 'Default'
-        }`
+        `Verified Google Sheet: "${data.title}" · Select Tab, Column & Starting Row to save links.`
       );
+      if (openLocationPrompt) {
+        setShowLocationModal(true);
+      }
     } catch (err: unknown) {
       setStatus(
         `Sheet Check Warning: ${err instanceof Error ? err.message : String(err)}`
       );
+      if (openLocationPrompt) {
+        setShowLocationModal(true);
+      }
     } finally {
       setIsCheckingSheet(false);
+    }
+  };
+
+  const handleSaveSheetLocationAndAutoSync = async () => {
+    setSavedSheetFlash(true);
+    setAutoSync(true);
+    localStorage.setItem('seo_concat_auto_sync', 'true');
+    try {
+      await fetch('/api/workspace-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          googleSheetUrl: sheetUrlInput.trim() || DEFAULT_GOOGLE_SHEET_URL,
+          sheetTabName: sheetTabName.trim() || 'SEO',
+          sheetColumn: sheetColumn || 'B',
+          sheetStartRow: Math.max(1, Number(sheetStartRow) || 3),
+        }),
+      });
+    } catch {
+      // ignore
+    }
+    setShowLocationModal(false);
+    setTimeout(() => setSavedSheetFlash(false), 1800);
+    if (rows.length > 0) {
+      await syncGoogleSheet(false);
+    } else {
+      setStatus(
+        `Saved Google Sheet destination (${liveRangePreview.fullRange}) globally & enabled Auto-Sync! Links added above will automatically sync to Tab "${sheetTabName}", Column ${sheetColumn}, Starting Row ${sheetStartRow}.`
+      );
     }
   };
 
@@ -226,6 +294,8 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
     setRows((prev) => [...prev, newRow]);
     setRowCounter((prev) => prev + 1);
     setSuffix('');
+    setAddedRowFlash(true);
+    setTimeout(() => setAddedRowFlash(false), 900);
     setStatus(`Added row #${rowCounter}: ${concatResult}`);
     suffixInputRef.current?.focus();
   };
@@ -391,22 +461,18 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
       setStatus('No Data: Add links before exporting to Excel.');
       return;
     }
-    const worksheetData = rows.map((r, index) => ({
-      'Sheet Row': Math.max(1, Number(sheetStartRow) || 3) + index,
-      'Target Cell': `${sheetColumn}${Math.max(1, Number(sheetStartRow) || 3) + index}`,
-      'Row ID': r.id,
-      'Generated Link': r.result,
-      Prefix: r.prefix,
-      Suffix: r.suffix,
-    }));
-    const worksheet = XLSX.utils.json_to_sheet(worksheetData);
+    // Export ONLY the concatenated links (one link per row in Column A, no extra columns or headers)
+    const linkOnlyRows = rows.map((r) => [r.result]);
+    const worksheet = XLSX.utils.aoa_to_sheet(linkOnlyRows);
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, sheetTabName || 'SEO');
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Links');
     XLSX.writeFile(
       workbook,
-      `seo-links-${new Date().toISOString().slice(0, 10)}.xlsx`
+      `concat-links-${new Date().toISOString().slice(0, 10)}.xlsx`
     );
-    setStatus(`Exported ${rows.length} row(s) to Excel.`);
+    setExportedFlash(true);
+    setTimeout(() => setExportedFlash(false), 1800);
+    setStatus(`Exported ${rows.length} link(s) to Excel (links only).`);
   };
 
   const syncGoogleSheet = async (silent = false) => {
@@ -468,18 +534,16 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
     }
   };
 
+  // Auto-sync whenever rows change if Auto-Sync is enabled
   useEffect(() => {
-    if (!autoSync) return;
-    const timer = setInterval(() => {
-      if (rows.length > 0) {
-        syncGoogleSheet(true);
-      }
-    }, 60000);
-    return () => clearInterval(timer);
+    if (!autoSync || rows.length === 0) return;
+    const debounceTimer = setTimeout(() => {
+      syncGoogleSheet(true);
+    }, 1500);
+    return () => clearTimeout(debounceTimer);
   }, [
     autoSync,
     rows,
-    credentials,
     cleanSheetId,
     sheetTabName,
     sheetColumn,
@@ -538,10 +602,19 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
             <button
               type="button"
               onClick={addRow}
-              className="w-full h-10 px-4 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold rounded-lg transition-colors flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer"
+              className="w-full h-10 px-4 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-sm font-semibold rounded-lg transition-all flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer shadow-xs"
             >
-              <Plus className="w-4 h-4" />
-              <span>Add Row</span>
+              {addedRowFlash ? (
+                <>
+                  <Check className="w-4 h-4" />
+                  <span>Added!</span>
+                </>
+              ) : (
+                <>
+                  <Plus className="w-4 h-4" />
+                  <span>Add Row</span>
+                </>
+              )}
             </button>
           </div>
         </div>
@@ -766,10 +839,19 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
             <button
               type="button"
               onClick={exportExcel}
-              className="px-3 py-2 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+              className="px-3 py-2 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 active:scale-95 rounded-lg transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
             >
-              <FileSpreadsheet className="w-3.5 h-3.5" />
-              <span>Export to Excel</span>
+              {exportedFlash ? (
+                <>
+                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Exported Links!</span>
+                </>
+              ) : (
+                <>
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  <span>Export to Excel (Links Only)</span>
+                </>
+              )}
             </button>
           </div>
 
@@ -840,22 +922,44 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
             <button
               type="button"
               disabled={isCheckingSheet}
-              onClick={handleCheckSheetInfo}
-              className="h-9 px-3 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 text-xs font-semibold rounded-lg transition-colors inline-flex items-center gap-1.5 cursor-pointer"
+              onClick={() => handleCheckSheetInfo(true)}
+              className="h-9 px-3.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-semibold rounded-lg transition-all inline-flex items-center gap-1.5 cursor-pointer shadow-xs"
             >
               <RefreshCw
                 className={`w-3.5 h-3.5 ${isCheckingSheet ? 'animate-spin' : ''}`}
               />
-              <span>{isCheckingSheet ? 'Checking...' : 'Verify Sheet & Load Tabs'}</span>
+              <span>
+                {isCheckingSheet
+                  ? 'Loading Sheet Tabs...'
+                  : 'Update Sheet & Choose Save Location'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleSaveSheetLocationAndAutoSync}
+              className="h-9 px-3.5 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white text-xs font-semibold rounded-lg transition-all inline-flex items-center gap-1.5 cursor-pointer shadow-xs"
+            >
+              {savedSheetFlash ? (
+                <>
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Saved &amp; Auto-Synced!</span>
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>Save Location &amp; Auto-Sync</span>
+                </>
+              )}
             </button>
 
             <a
               href={buildGoogleSheetUrl(sheetUrlInput)}
               target="_blank"
               rel="noopener noreferrer"
-              className="h-9 px-3.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
+              className="h-9 px-3 bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 text-xs font-semibold rounded-lg transition-all inline-flex items-center gap-1.5 whitespace-nowrap active:scale-95"
             >
-              <span>Open Google Sheet</span>
+              <span>Open Sheet</span>
               <ExternalLink className="w-3.5 h-3.5" />
             </a>
 
@@ -869,11 +973,11 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
                 setVerifiedSheetTitle(null);
                 setStatus('Reset Google Sheet settings to default (SEO!B3).');
               }}
-              className="h-9 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition-colors inline-flex items-center gap-1 cursor-pointer"
+              className="h-9 px-3 bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-700 text-xs font-semibold rounded-lg transition-all inline-flex items-center gap-1 cursor-pointer"
               title="Reset to default Google Sheet"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              <span>Reset Default</span>
+              <span>Reset</span>
             </button>
           </div>
         </div>
@@ -882,7 +986,7 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
         <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
           <div className="md:col-span-6">
             <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Google Sheet URL or Spreadsheet ID (Change Anytime)
+              Google Sheet URL or Spreadsheet ID (Paste New Link &amp; Press Enter)
             </label>
             <input
               type="text"
@@ -890,6 +994,11 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
               onChange={(e) => {
                 setSheetUrlInput(e.target.value);
                 setVerifiedSheetTitle(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  handleCheckSheetInfo(true);
+                }
               }}
               placeholder="https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit"
               className="w-full h-10 px-3 rounded-lg border border-slate-300 text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
@@ -1046,6 +1155,121 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
           </div>
         )}
       </div>
+
+      {/* Choose Sheet Save Location Modal (Prompts for Tab, Column, and Start Row when Sheet is updated) */}
+      {showLocationModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-xl max-w-lg w-full p-5 shadow-xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="text-sm sm:text-base font-bold text-slate-900">
+                  Where Should Concatenated Links Be Saved?
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {verifiedSheetTitle
+                    ? `Connected to "${verifiedSheetTitle}" (${cleanSheetId})`
+                    : `Sheet ID: ${cleanSheetId}`}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowLocationModal(false)}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3.5">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  1. On Which Sheet Tab?
+                </label>
+                {availableSheetTabs.length > 0 ? (
+                  <select
+                    value={sheetTabName}
+                    onChange={(e) => setSheetTabName(e.target.value)}
+                    className="w-full h-10 px-3 rounded-lg border border-slate-300 bg-white text-xs font-mono font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  >
+                    {availableSheetTabs.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={sheetTabName}
+                    onChange={(e) => setSheetTabName(e.target.value)}
+                    placeholder="e.g. SEO or Sheet1"
+                    className="w-full h-10 px-3 rounded-lg border border-slate-300 text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  />
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    2. Under Which Column?
+                  </label>
+                  <select
+                    value={sheetColumn}
+                    onChange={(e) => setSheetColumn(e.target.value)}
+                    className="w-full h-10 px-3 rounded-lg border border-slate-300 bg-white text-xs font-mono font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  >
+                    {COLUMNS.map((c) => (
+                      <option key={c} value={c}>
+                        Column {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    3. Starting From Which Row #?
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={sheetStartRow}
+                    onChange={(e) =>
+                      setSheetStartRow(Math.max(1, Number(e.target.value) || 1))
+                    }
+                    className="w-full h-10 px-3 rounded-lg border border-slate-300 text-xs font-mono font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  />
+                </div>
+              </div>
+
+              <div className="p-3 rounded-lg bg-blue-50 border border-blue-200 text-xs text-blue-900 font-mono">
+                Target Destination: <strong>{liveRangePreview.fullRange}</strong>{' '}
+                (Tab <strong>{sheetTabName || 'Default'}</strong>, Column{' '}
+                <strong>{sheetColumn}</strong>, starting at Row{' '}
+                <strong>{sheetStartRow}</strong>)
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowLocationModal(false)}
+                className="px-3.5 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveSheetLocationAndAutoSync}
+                className="px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 active:scale-95 rounded-lg inline-flex items-center gap-1.5 cursor-pointer transition-all"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>Save Location &amp; Auto-Sync Sheet</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Bulk Paste Suffixes Modal */}
       {showBulkModal && (

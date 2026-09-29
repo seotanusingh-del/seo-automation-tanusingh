@@ -37,6 +37,7 @@ import {
   Mail,
   Copy,
   Check,
+  Loader2,
 } from 'lucide-react';
 import {
   DEFAULT_OLD_TFN,
@@ -270,6 +271,16 @@ export default function App() {
   // Generation & Sync State
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSyncingDoc, setIsSyncingDoc] = useState(false);
+  const [globalActionNotice, setGlobalActionNotice] = useState<string | null>(null);
+  const [syncedDocFlash, setSyncedDocFlash] = useState(false);
+  const [generatedFlash, setGeneratedFlash] = useState(false);
+  const [resetDefaultsFlash, setResetDefaultsFlash] = useState(false);
+  const lastWorkspaceSyncRef = useRef<number>(
+    Number(localStorage.getItem('seo_workspace_updated_at')) || 0
+  );
+  const activeSyncedDocIdRef = useRef<string>(
+    localStorage.getItem('seo_synced_doc_id') || extractGoogleDocId(googleDocUrl)
+  );
   const [statusMessage, setStatusMessage] = useState(
     'Ready to generate a fresh output set.'
   );
@@ -405,6 +416,105 @@ export default function App() {
     }
   };
 
+  const triggerActionNotice = (msg: string, durationMs = 2200) => {
+    setGlobalActionNotice(msg);
+    setTimeout(() => {
+      setGlobalActionNotice((prev) => (prev === msg ? null : prev));
+    }, durationMs);
+  };
+
+  // Pull & sync global workspace state across Mac, Phone, and multiple browser windows
+  const pullGlobalWorkspaceConfig = async () => {
+    try {
+      const res = await fetch('/api/workspace-config', { cache: 'no-store' });
+      if (!res.ok) return;
+      const cfg = await res.json();
+      if (!cfg || !cfg.updatedAt || cfg.updatedAt <= lastWorkspaceSyncRef.current) {
+        return;
+      }
+      lastWorkspaceSyncRef.current = cfg.updatedAt;
+      localStorage.setItem('seo_workspace_updated_at', String(cfg.updatedAt));
+
+      if (cfg.credentials && cfg.credentials.client_email) {
+        setCredentials(cfg.credentials);
+        localStorage.setItem('seo_credentials', JSON.stringify(cfg.credentials));
+      }
+      if (cfg.userName) {
+        setUserName(cfg.userName);
+        localStorage.setItem('seo_user_display_name', cfg.userName);
+      }
+      if (cfg.userAvatarUrl) {
+        setUserAvatarUrl(cfg.userAvatarUrl);
+        localStorage.setItem('seo_user_avatar_url', cfg.userAvatarUrl);
+      }
+      if (cfg.defaultOldTfn) {
+        setDefaultOldTfn(cfg.defaultOldTfn);
+        localStorage.setItem('seo_default_old_tfn', cfg.defaultOldTfn);
+      }
+      if (cfg.defaultNewTfn) {
+        setDefaultNewTfn(cfg.defaultNewTfn);
+        localStorage.setItem('seo_default_new_tfn', cfg.defaultNewTfn);
+      }
+      if (cfg.defaultReplacementWord) {
+        setDefaultReplacementWord(cfg.defaultReplacementWord);
+        localStorage.setItem('seo_default_replacement_word', cfg.defaultReplacementWord);
+      }
+      if (cfg.googleDocUrl) {
+        const incomingDocId = extractGoogleDocId(cfg.googleDocUrl);
+        const currentDocId = activeSyncedDocIdRef.current;
+        setGoogleDocUrl(cfg.googleDocUrl);
+        localStorage.setItem('seo_google_doc_url', cfg.googleDocUrl);
+
+        if (incomingDocId !== currentDocId) {
+          // Purge stale template cache when doc URL was changed on another device
+          localStorage.removeItem('seo_template_base64');
+          localStorage.removeItem('seo_template_name');
+          setTemplateBuffer(null);
+          setTemplateName(null);
+        }
+
+        if (cfg.syncedDocBase64) {
+          const bytes = base64ToUint8Array(cfg.syncedDocBase64);
+          setTemplateBuffer(bytes.buffer as ArrayBuffer);
+          setTemplateName('googledriveautomation.docx');
+          activeSyncedDocIdRef.current = incomingDocId;
+          localStorage.setItem('seo_synced_doc_id', incomingDocId);
+        }
+        if (cfg.syncedDocText) {
+          setWhiteboardText(cfg.syncedDocText);
+          activeSyncedDocIdRef.current = incomingDocId;
+          localStorage.setItem('seo_synced_doc_id', incomingDocId);
+        }
+        if (Array.isArray(cfg.syncedFoundAirlines) && cfg.syncedFoundAirlines.length > 0) {
+          setDetectedAirlines(cfg.syncedFoundAirlines);
+        }
+        if (cfg.syncedPrimaryAirline) {
+          setReplacementWord(cfg.syncedPrimaryAirline);
+        }
+        if (Array.isArray(cfg.syncedUniqueTfns) && cfg.syncedUniqueTfns.length > 0) {
+          setOldTfn(cfg.syncedUniqueTfns.join(', '));
+        }
+      }
+    } catch {
+      // ignore offline
+    }
+  };
+
+  useEffect(() => {
+    void pullGlobalWorkspaceConfig();
+    const onFocus = () => {
+      void pullGlobalWorkspaceConfig();
+    };
+    window.addEventListener('focus', onFocus);
+    const interval = setInterval(() => {
+      void pullGlobalWorkspaceConfig();
+    }, 8000);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      clearInterval(interval);
+    };
+  }, []);
+
   useEffect(() => {
     checkServerStatus();
   }, [libreOfficePath, localBridgeUrl]);
@@ -459,10 +569,14 @@ export default function App() {
     }
   };
 
-  const handleSyncGoogleDoc = async () => {
+  const handleSyncGoogleDoc = async (): Promise<ArrayBuffer | null> => {
     const cleanDocId = extractGoogleDocId(googleDocUrl);
     setIsSyncingDoc(true);
     setStatusMessage(`Syncing Google Doc (${cleanDocId})... Please wait.`);
+    // Purge any stale cached template before syncing the new doc
+    localStorage.removeItem('seo_template_base64');
+    localStorage.removeItem('seo_template_name');
+    let syncedBuffer: ArrayBuffer | null = null;
     try {
       const res = await fetch('/api/sync-google-doc', {
         method: 'POST',
@@ -477,6 +591,13 @@ export default function App() {
       if (!res.ok) {
         throw new Error(data.error || 'Failed to sync Google Doc.');
       }
+
+      if (data.updatedAt) {
+        lastWorkspaceSyncRef.current = data.updatedAt;
+        localStorage.setItem('seo_workspace_updated_at', String(data.updatedAt));
+      }
+      activeSyncedDocIdRef.current = cleanDocId;
+      localStorage.setItem('seo_synced_doc_id', cleanDocId);
 
       if (Array.isArray(data.foundAirlines) && data.foundAirlines.length > 0) {
         setDetectedAirlines(data.foundAirlines);
@@ -494,7 +615,8 @@ export default function App() {
 
       if (data.docxBase64) {
         const bytes = base64ToUint8Array(data.docxBase64);
-        setTemplateBuffer(bytes.buffer as ArrayBuffer);
+        syncedBuffer = bytes.buffer as ArrayBuffer;
+        setTemplateBuffer(syncedBuffer);
         setTemplateName(data.fileName || 'googledriveautomation.docx');
       } else if (data.fullText) {
         // Build a valid DOCX template buffer from fullText if direct export wasn't returned
@@ -508,10 +630,14 @@ export default function App() {
           [],
           { fontFamily: 'Calibri', fontSize: 11 }
         );
-        setTemplateBuffer(fallbackDocx.buffer as ArrayBuffer);
+        syncedBuffer = fallbackDocx.buffer as ArrayBuffer;
+        setTemplateBuffer(syncedBuffer);
         setTemplateName('googledriveautomation.docx');
       }
 
+      setSyncedDocFlash(true);
+      setTimeout(() => setSyncedDocFlash(false), 2000);
+      triggerActionNotice(`✓ Synced Google Doc (${cleanDocId}) across all devices!`);
       setStatusMessage(
         `Sync complete (${cleanDocId}): ${data.foundAirlines?.length || 0} airline(s), ${
           data.uniqueTfns?.length || 0
@@ -520,9 +646,11 @@ export default function App() {
       if (Array.isArray(data.logLines)) {
         setSyncModalLines(data.logLines);
       }
+      return syncedBuffer;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       setStatusMessage(`Google Doc sync failed: ${msg}`);
+      return null;
     } finally {
       setIsSyncingDoc(false);
     }
@@ -534,6 +662,22 @@ export default function App() {
     if (activeSelectedAirlines.length === 0) {
       setStatusMessage('Input Required: Select at least one airline before generating outputs.');
       return;
+    }
+
+    // Check if another device updated the Google Doc or credentials before generating
+    await pullGlobalWorkspaceConfig();
+
+    // If the Google Doc URL was updated and differs from the cached template's Doc ID, auto-sync the new doc first!
+    let activeBuffer = templateBuffer;
+    const currentTargetDocId = extractGoogleDocId(googleDocUrl);
+    if (
+      !useWhiteboard &&
+      (!activeBuffer || activeSyncedDocIdRef.current !== currentTargetDocId)
+    ) {
+      const freshBuf = await handleSyncGoogleDoc();
+      if (freshBuf) {
+        activeBuffer = freshBuf;
+      }
     }
 
     // If Old TFN is left empty, automatically use the configured Default Old TFN directly
@@ -554,7 +698,7 @@ export default function App() {
         setStatusMessage('Input Required: Write or paste content into the whiteboard before generating.');
         return;
       }
-    } else if (!templateBuffer) {
+    } else if (!activeBuffer) {
       setStatusMessage('Input Required: Attach a DOCX template (or Sync Google Doc) before generating template outputs.');
       return;
     }
@@ -607,7 +751,7 @@ export default function App() {
           );
         } else {
           docxBytes = await processDocxTemplateBuffer(
-            templateBuffer!,
+            activeBuffer!,
             airline,
             effectiveOldTfn,
             effectiveNewTfn,
@@ -644,6 +788,9 @@ export default function App() {
       setStatusMessage(
         `Completed! Generated ${builtItems.length} ready-to-use PDF document(s) in ${folderName}.`
       );
+      setGeneratedFlash(true);
+      setTimeout(() => setGeneratedFlash(false), 2200);
+      triggerActionNotice(`✓ Generated ${builtItems.length} PDF document(s)!`);
     } catch (err: unknown) {
       setStatusMessage(
         `Generation Failed: ${err instanceof Error ? err.message : String(err)}`
@@ -1166,6 +1313,34 @@ export default function App() {
 
         {/* Main Content Container */}
         <main className="flex-1 max-w-[1400px] w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6">
+        {/* Global Application Loader & Action Feedback Bar */}
+        {(isGenerating || isSyncingDoc || globalActionNotice) && (
+          <div
+            className={`mb-4 px-4 py-3 rounded-xl shadow-md flex items-center justify-between gap-3 transition-all ${
+              isGenerating || isSyncingDoc
+                ? 'bg-blue-600 text-white animate-pulse'
+                : 'bg-emerald-600 text-white'
+            }`}
+          >
+            <div className="flex items-center gap-2.5 text-xs sm:text-sm font-bold">
+              {isGenerating || isSyncingDoc ? (
+                <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+              ) : (
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+              )}
+              <span>
+                {isGenerating
+                  ? `Generating ${activeSelectedAirlines.length} Airline PDF Document(s)... Please wait`
+                  : isSyncingDoc
+                  ? `Syncing Google Doc (${extractGoogleDocId(googleDocUrl)}) & Updating Template...`
+                  : globalActionNotice}
+              </span>
+            </div>
+            <span className="text-[11px] font-mono bg-black/15 px-2.5 py-0.5 rounded-full shrink-0">
+              {isGenerating || isSyncingDoc ? 'Running...' : 'Completed'}
+            </span>
+          </div>
+        )}
         {activeTab === 'home' && (
           <div className="space-y-6">
             {/* Shared Setup Section */}
@@ -1181,12 +1356,26 @@ export default function App() {
                 </div>
                 <button
                   type="button"
-                  onClick={handleResetHomeDefaultValues}
-                  className="h-8 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition-colors inline-flex items-center gap-1.5 cursor-pointer"
+                  onClick={() => {
+                    handleResetHomeDefaultValues();
+                    setResetDefaultsFlash(true);
+                    setTimeout(() => setResetDefaultsFlash(false), 1800);
+                    triggerActionNotice('✓ Reset Old TFN, New TFN & Replacement Word to Defaults');
+                  }}
+                  className="h-8 px-3 bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-700 text-xs font-semibold rounded-lg transition-all inline-flex items-center gap-1.5 cursor-pointer"
                   title="Reset Old TFN, New TFN, and Replacement Word to configured defaults"
                 >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Reset Default Values</span>
+                  {resetDefaultsFlash ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>Reset Applied!</span>
+                    </>
+                  ) : (
+                    <>
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Reset Default Values</span>
+                    </>
+                  )}
                 </button>
               </div>
 
@@ -1363,15 +1552,25 @@ export default function App() {
                         <button
                           type="button"
                           disabled={isSyncingDoc}
-                          onClick={handleSyncGoogleDoc}
-                          className="h-9 px-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 shrink-0 cursor-pointer"
+                          onClick={() => void handleSyncGoogleDoc()}
+                          className="h-9 px-3 bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-all flex items-center gap-1.5 shrink-0 cursor-pointer shadow-xs"
                         >
-                          <RefreshCw
-                            className={`w-3.5 h-3.5 ${
-                              isSyncingDoc ? 'animate-spin' : ''
-                            }`}
-                          />
-                          <span>{isSyncingDoc ? 'Syncing' : 'Sync'}</span>
+                          {isSyncingDoc ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span>Syncing...</span>
+                            </>
+                          ) : syncedDocFlash ? (
+                            <>
+                              <Check className="w-3.5 h-3.5" />
+                              <span>Synced!</span>
+                            </>
+                          ) : (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5" />
+                              <span>Sync</span>
+                            </>
+                          )}
                         </button>
                       </div>
                       <p className="text-[11px] text-slate-500">
@@ -1463,12 +1662,24 @@ export default function App() {
                           type="button"
                           disabled={isGenerating}
                           onClick={() => runGeneration(homeMode === 'whiteboard')}
-                          className="h-10 px-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
+                          className="h-10 px-3 bg-emerald-600 hover:bg-emerald-700 active:scale-95 disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer shadow-xs"
                         >
-                          <Zap className="w-3.5 h-3.5" />
-                          <span>
-                            {isGenerating ? 'Generating...' : 'Generate Document'}
-                          </span>
+                          {isGenerating ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span>Generating...</span>
+                            </>
+                          ) : generatedFlash ? (
+                            <>
+                              <Check className="w-3.5 h-3.5" />
+                              <span>Generated!</span>
+                            </>
+                          ) : (
+                            <>
+                              <Zap className="w-3.5 h-3.5" />
+                              <span>Generate Document</span>
+                            </>
+                          )}
                         </button>
 
                         <button
@@ -1483,8 +1694,8 @@ export default function App() {
                         <button
                           type="button"
                           disabled={isSyncingDoc}
-                          onClick={handleSyncGoogleDoc}
-                          className="h-10 px-3 bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 disabled:opacity-50 text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
+                          onClick={() => void handleSyncGoogleDoc()}
+                          className="h-10 px-3 bg-blue-50 hover:bg-blue-100 active:scale-95 border border-blue-200 text-blue-700 disabled:opacity-50 text-xs font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
                         >
                           <RefreshCw
                             className={`w-3.5 h-3.5 ${
@@ -1492,7 +1703,11 @@ export default function App() {
                             }`}
                           />
                           <span>
-                            {isSyncingDoc ? 'Syncing...' : 'Sync Google Doc'}
+                            {isSyncingDoc
+                              ? 'Syncing...'
+                              : syncedDocFlash
+                              ? 'Synced!'
+                              : 'Sync Google Doc'}
                           </span>
                         </button>
 
@@ -1880,6 +2095,7 @@ export default function App() {
               setTemplateBuffer(null);
               setTemplateName(null);
               setGoogleDocUrl(nextUrl);
+              triggerActionNotice(`✓ Updated Google Doc URL (${extractGoogleDocId(nextUrl)}) & Purged Old Cache`);
             }}
             defaultOldTfn={defaultOldTfn}
             defaultNewTfn={defaultNewTfn}

@@ -9,6 +9,11 @@ import { google } from 'googleapis';
 import {
   DEFAULT_AIRLINES,
   DEFAULT_CREDENTIALS,
+  DEFAULT_GOOGLE_DOC_URL,
+  DEFAULT_GOOGLE_SHEET_URL,
+  DEFAULT_OLD_TFN,
+  DEFAULT_NEW_TFN,
+  DEFAULT_REPLACEMENT_WORD,
   GOOGLE_DOC_ID,
   GOOGLE_SHEET_ID,
   SERP_COUNTRY_LOCATIONS,
@@ -22,6 +27,135 @@ import {
 } from '../src/lib/seoHelpers.js';
 
 const execFileAsync = promisify(execFile);
+
+export interface GlobalWorkspaceConfig {
+  updatedAt: number;
+  credentials: ServiceAccountCredentials;
+  googleDocUrl: string;
+  googleSheetUrl: string;
+  sheetTabName: string;
+  sheetColumn: string;
+  sheetStartRow: number;
+  defaultOldTfn: string;
+  defaultNewTfn: string;
+  defaultReplacementWord: string;
+  userName: string;
+  userAvatarUrl: string;
+  githubRepo: string;
+  githubBranch: string;
+  githubToken: string;
+  syncedDocId?: string;
+  syncedDocText?: string;
+  syncedDocBase64?: string;
+  syncedFoundAirlines?: string[];
+  syncedPrimaryAirline?: string;
+  syncedUniqueTfns?: string[];
+}
+
+const WORKSPACE_CONFIG_PRIMARY = path.join(process.cwd(), 'workspace-config.json');
+const WORKSPACE_CONFIG_FALLBACK = path.join(os.tmpdir(), 'seo-studio-workspace-config.json');
+
+function getDefaultWorkspaceConfig(): GlobalWorkspaceConfig {
+  return {
+    updatedAt: 0,
+    credentials: DEFAULT_CREDENTIALS,
+    googleDocUrl: DEFAULT_GOOGLE_DOC_URL,
+    googleSheetUrl: DEFAULT_GOOGLE_SHEET_URL,
+    sheetTabName: 'SEO',
+    sheetColumn: 'B',
+    sheetStartRow: 3,
+    defaultOldTfn: DEFAULT_OLD_TFN,
+    defaultNewTfn: DEFAULT_NEW_TFN,
+    defaultReplacementWord: DEFAULT_REPLACEMENT_WORD,
+    userName: 'TANU SINGH',
+    userAvatarUrl: '',
+    githubRepo: process.env.GITHUB_REPO || '',
+    githubBranch: process.env.GITHUB_BRANCH || 'main',
+    githubToken: process.env.GITHUB_TOKEN || '',
+  };
+}
+
+let inMemoryWorkspaceConfig: GlobalWorkspaceConfig | null = null;
+
+function getWorkspaceConfig(): GlobalWorkspaceConfig {
+  if (inMemoryWorkspaceConfig) {
+    return inMemoryWorkspaceConfig;
+  }
+  const base = getDefaultWorkspaceConfig();
+  for (const filePath of [WORKSPACE_CONFIG_PRIMARY, WORKSPACE_CONFIG_FALLBACK]) {
+    try {
+      if (fs.existsSync(filePath)) {
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        if (parsed && typeof parsed === 'object') {
+          const loaded: GlobalWorkspaceConfig = {
+            ...base,
+            ...parsed,
+            credentials: {
+              ...base.credentials,
+              ...(parsed.credentials || {}),
+            },
+          };
+          inMemoryWorkspaceConfig = loaded;
+          return loaded;
+        }
+      }
+    } catch {
+      // ignore read error
+    }
+  }
+  inMemoryWorkspaceConfig = base;
+  return base;
+}
+
+function saveWorkspaceConfig(partial: Partial<GlobalWorkspaceConfig>): GlobalWorkspaceConfig {
+  const current = getWorkspaceConfig();
+  const docChanged =
+    Boolean(partial.googleDocUrl) &&
+    extractGoogleDocId(partial.googleDocUrl || '') !==
+      extractGoogleDocId(current.googleDocUrl || '');
+
+  const next: GlobalWorkspaceConfig = {
+    ...current,
+    ...(docChanged
+      ? {
+          syncedDocId: extractGoogleDocId(partial.googleDocUrl || ''),
+          syncedDocText: '',
+          syncedDocBase64: '',
+          syncedFoundAirlines: [],
+          syncedPrimaryAirline: '',
+          syncedUniqueTfns: [],
+        }
+      : {}),
+    ...partial,
+    credentials: partial.credentials
+      ? {
+          ...DEFAULT_CREDENTIALS,
+          ...current.credentials,
+          ...partial.credentials,
+          project_id: String(
+            partial.credentials.project_id ?? current.credentials.project_id
+          ).trim(),
+          client_email: String(
+            partial.credentials.client_email ?? current.credentials.client_email
+          ).trim(),
+          private_key: String(
+            partial.credentials.private_key ?? current.credentials.private_key
+          ),
+        }
+      : current.credentials,
+    updatedAt: Date.now(),
+  };
+  inMemoryWorkspaceConfig = next;
+  const serialized = JSON.stringify(next, null, 2);
+  for (const filePath of [WORKSPACE_CONFIG_PRIMARY, WORKSPACE_CONFIG_FALLBACK]) {
+    try {
+      fs.writeFileSync(filePath, serialized, 'utf-8');
+    } catch {
+      // ignore if read-only fs
+    }
+  }
+  return next;
+}
 
 export function findLibreOffice(customPath?: string): string | null {
   const candidates: string[] = [];
@@ -84,6 +218,181 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json({ limit: '50mb' }));
+
+app.get('/api/workspace-config', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const cfg = getWorkspaceConfig();
+  res.json({
+    ...cfg,
+    hasGithubToken: Boolean(cfg.githubToken),
+    githubToken: undefined, // Never expose raw token in GET
+  });
+});
+
+app.post('/api/workspace-config', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const body = (req.body || {}) as Partial<GlobalWorkspaceConfig>;
+  const saved = saveWorkspaceConfig(body);
+  res.json({
+    ok: true,
+    config: {
+      ...saved,
+      hasGithubToken: Boolean(saved.githubToken),
+      githubToken: undefined,
+    },
+    message: 'Workspace configuration saved globally across all devices (Mac, Phone & Web).',
+  });
+});
+
+app.post('/api/upload-profile-avatar', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const {
+    imageDataUri = '',
+    githubRepo = '',
+    githubBranch = 'main',
+    githubToken = '',
+  } = (req.body || {}) as {
+    imageDataUri?: string;
+    githubRepo?: string;
+    githubBranch?: string;
+    githubToken?: string;
+  };
+
+  if (!imageDataUri || !imageDataUri.startsWith('data:image/')) {
+    res.status(400).json({ error: 'Valid image data URI is required.' });
+    return;
+  }
+
+  const base64Match = imageDataUri.match(/^data:image\/[a-zA-Z0-9+.-]+;base64,(.+)$/);
+  if (!base64Match) {
+    res.status(400).json({ error: 'Invalid base64 image format.' });
+    return;
+  }
+
+  const base64Data = base64Match[1];
+  const imgBuffer = Buffer.from(base64Data, 'base64');
+
+  // 1. Save directly to repository files (public/tanu-singh-avatar.jpg, src/assets/..., and src/lib/defaultAvatar.ts)
+  const savedPaths: string[] = [];
+  const candidateFiles = [
+    path.join(process.cwd(), 'public', 'tanu-singh-avatar.jpg'),
+    path.join(process.cwd(), 'src', 'assets', 'images', 'tanu_singh_avatar_1790678043096.jpg'),
+  ];
+
+  for (const targetFile of candidateFiles) {
+    try {
+      fs.mkdirSync(path.dirname(targetFile), { recursive: true });
+      fs.writeFileSync(targetFile, imgBuffer);
+      savedPaths.push(path.relative(process.cwd(), targetFile));
+    } catch {
+      // ignore if read-only in serverless
+    }
+  }
+
+  try {
+    const defaultAvatarTsPath = path.join(process.cwd(), 'src', 'lib', 'defaultAvatar.ts');
+    fs.writeFileSync(
+      defaultAvatarTsPath,
+      `// Auto-generated embedded data URI for user profile icon\nexport const DEFAULT_TANU_AVATAR_DATA_URI = "${imageDataUri}";\n`,
+      'utf-8'
+    );
+    savedPaths.push('src/lib/defaultAvatar.ts');
+  } catch {
+    // ignore if read-only
+  }
+
+  // 2. Stage in local git repository if .git exists so AI Studio / GitHub sync includes it automatically
+  let localGitStaged = false;
+  try {
+    if (fs.existsSync(path.join(process.cwd(), '.git'))) {
+      execSync('git add public/tanu-singh-avatar.jpg src/lib/defaultAvatar.ts', {
+        cwd: process.cwd(),
+        stdio: 'ignore',
+      });
+      localGitStaged = true;
+    }
+  } catch {
+    // ignore git stage error
+  }
+
+  // 3. Optional Direct GitHub API Push if githubRepo & githubToken are configured
+  const cfg = getWorkspaceConfig();
+  const activeRepo = (githubRepo || cfg.githubRepo || process.env.GITHUB_REPO || '').trim()
+    .replace(/^https?:\/\/github\.com\//i, '')
+    .replace(/\.git$/i, '')
+    .replace(/\/+$/, '');
+  const activeBranch = (githubBranch || cfg.githubBranch || 'main').trim() || 'main';
+  const activeToken = (githubToken || cfg.githubToken || process.env.GITHUB_TOKEN || '').trim();
+
+  let githubRawUrl: string | null = null;
+  let githubPushStatus = '';
+
+  if (activeRepo && activeToken) {
+    try {
+      const targetPath = 'public/tanu-singh-avatar.jpg';
+      const apiUrl = `https://api.github.com/repos/${activeRepo}/contents/${targetPath}`;
+      let existingSha: string | undefined;
+
+      const getRes = await fetch(`${apiUrl}?ref=${encodeURIComponent(activeBranch)}`, {
+        headers: {
+          Authorization: `Bearer ${activeToken}`,
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'seo-automator-app',
+        },
+      });
+      if (getRes.ok) {
+        const getJson = (await getRes.json()) as { sha?: string };
+        existingSha = getJson.sha;
+      }
+
+      const putRes = await fetch(apiUrl, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${activeToken}`,
+          Accept: 'application/vnd.github+json',
+          'Content-Type': 'application/json',
+          'User-Agent': 'seo-automator-app',
+        },
+        body: JSON.stringify({
+          message: 'Update user profile picture via SEO AUTOMATOR Settings',
+          content: base64Data,
+          branch: activeBranch,
+          ...(existingSha ? { sha: existingSha } : {}),
+        }),
+      });
+
+      if (putRes.ok) {
+        githubRawUrl = `https://raw.githubusercontent.com/${activeRepo}/${activeBranch}/${targetPath}?t=${Date.now()}`;
+        githubPushStatus = `Uploaded directly to GitHub (${activeRepo}@${activeBranch}/${targetPath})!`;
+      } else {
+        const errText = await putRes.text();
+        githubPushStatus = `Saved to app & repo files (GitHub API note: ${putRes.status} ${errText.slice(0, 80)})`;
+      }
+    } catch (err: unknown) {
+      githubPushStatus = `Saved to app & repo files (${err instanceof Error ? err.message : 'GitHub push skipped'})`;
+    }
+  } else {
+    githubPushStatus =
+      'Saved to repository (public/tanu-singh-avatar.jpg & src/lib/defaultAvatar.ts) and synced across all devices!';
+  }
+
+  const savedCfg = saveWorkspaceConfig({
+    userAvatarUrl: imageDataUri,
+    ...(activeRepo ? { githubRepo: activeRepo } : {}),
+    ...(activeBranch ? { githubBranch: activeBranch } : {}),
+    ...(githubToken ? { githubToken: activeToken } : {}),
+  });
+
+  res.json({
+    ok: true,
+    avatarUrl: imageDataUri,
+    githubRawUrl,
+    savedPaths,
+    localGitStaged,
+    updatedAt: savedCfg.updatedAt,
+    message: githubPushStatus,
+  });
+});
 
 app.get('/api/system-status', (req, res) => {
   const customPath = typeof req.query.customPath === 'string' ? req.query.customPath : undefined;
@@ -212,9 +521,11 @@ function extractTextFromGoogleDocContent(items: any[]): string {
 }
 
 app.post('/api/sync-google-doc', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const globalCfg = getWorkspaceConfig();
   const {
-    credentials = DEFAULT_CREDENTIALS,
-    docId = GOOGLE_DOC_ID,
+    credentials: bodyCreds,
+    docId: bodyDocId,
     airlines = DEFAULT_AIRLINES,
   } = req.body as {
     credentials?: ServiceAccountCredentials;
@@ -222,7 +533,20 @@ app.post('/api/sync-google-doc', async (req, res) => {
     airlines?: string[];
   };
 
-  const cleanDocId = extractGoogleDocId(docId || GOOGLE_DOC_ID);
+  // Always prefer the latest globally saved workspace config if a phone/second window sends stale default values
+  const incomingDocId = extractGoogleDocId(bodyDocId || '');
+  const globalDocId = extractGoogleDocId(globalCfg.googleDocUrl || GOOGLE_DOC_ID);
+  const cleanDocId =
+    globalCfg.updatedAt > 0 && (!incomingDocId || incomingDocId === GOOGLE_DOC_ID)
+      ? globalDocId
+      : incomingDocId || globalDocId;
+
+  const credentials: ServiceAccountCredentials =
+    globalCfg.updatedAt > 0 &&
+    (!bodyCreds ||
+      bodyCreds.client_email === DEFAULT_CREDENTIALS.client_email)
+      ? globalCfg.credentials
+      : bodyCreds || globalCfg.credentials || DEFAULT_CREDENTIALS;
 
   try {
     let fullText = '';
@@ -262,10 +586,12 @@ app.post('/api/sync-google-doc', async (req, res) => {
           docxBase64 = Buffer.from(exportRes.data as ArrayBuffer).toString('base64');
         }
       } catch {
-        // Fallback to direct Google Docs DOCX export URL
+        // Fallback to direct Google Docs DOCX export URL (cache-busted)
         try {
-          const docxUrl = `https://docs.google.com/document/d/${cleanDocId}/export?format=docx`;
-          const docxRes = await fetch(docxUrl);
+          const docxUrl = `https://docs.google.com/document/d/${cleanDocId}/export?format=docx&t=${Date.now()}`;
+          const docxRes = await fetch(docxUrl, {
+            headers: { 'Cache-Control': 'no-cache, no-store', Pragma: 'no-cache' },
+          });
           if (docxRes.ok) {
             const arrBuf = await docxRes.arrayBuffer();
             docxBase64 = Buffer.from(arrBuf).toString('base64');
@@ -276,11 +602,13 @@ app.post('/api/sync-google-doc', async (req, res) => {
       }
     } catch (serviceAccountErr) {
       // Fallback: if the user pasted a public Google Doc link ("Anyone with the link"),
-      // fetch its plain text and DOCX export directly via Google Docs public export URLs
-      const txtUrl = `https://docs.google.com/document/d/${cleanDocId}/export?format=txt`;
-      const docxUrl = `https://docs.google.com/document/d/${cleanDocId}/export?format=docx`;
+      // fetch its plain text and DOCX export directly via Google Docs public export URLs (cache-busted)
+      const txtUrl = `https://docs.google.com/document/d/${cleanDocId}/export?format=txt&t=${Date.now()}`;
+      const docxUrl = `https://docs.google.com/document/d/${cleanDocId}/export?format=docx&t=${Date.now()}`;
 
-      const txtRes = await fetch(txtUrl);
+      const txtRes = await fetch(txtUrl, {
+        headers: { 'Cache-Control': 'no-cache, no-store', Pragma: 'no-cache' },
+      });
       if (!txtRes.ok) {
         throw serviceAccountErr;
       }
@@ -288,7 +616,9 @@ app.post('/api/sync-google-doc', async (req, res) => {
       usedPublicFallback = true;
 
       try {
-        const docxRes = await fetch(docxUrl);
+        const docxRes = await fetch(docxUrl, {
+          headers: { 'Cache-Control': 'no-cache, no-store', Pragma: 'no-cache' },
+        });
         if (docxRes.ok) {
           const arrBuf = await docxRes.arrayBuffer();
           docxBase64 = Buffer.from(arrBuf).toString('base64');
@@ -369,8 +699,23 @@ app.post('/api/sync-google-doc', async (req, res) => {
       resultLines.push('Downloaded Google Doc as googledriveautomation.docx and attached as active template.');
     }
 
+    const savedCfg = saveWorkspaceConfig({
+      googleDocUrl: `https://docs.google.com/document/d/${cleanDocId}/edit`,
+      credentials,
+      syncedDocId: cleanDocId,
+      syncedDocText: fullText,
+      syncedDocBase64: docxBase64 || '',
+      syncedFoundAirlines: foundAirlines,
+      syncedPrimaryAirline: primaryAirline || '',
+      syncedUniqueTfns: uniqueTfns,
+      ...(uniqueTfns.length > 0 ? { defaultOldTfn: uniqueTfns.join(', ') } : {}),
+      ...(primaryAirline ? { defaultReplacementWord: primaryAirline } : {}),
+    });
+
     res.json({
       docId: cleanDocId,
+      googleDocUrl: `https://docs.google.com/document/d/${cleanDocId}/edit`,
+      credentials,
       fullText,
       docxBase64,
       fileName: 'googledriveautomation.docx',
@@ -378,6 +723,7 @@ app.post('/api/sync-google-doc', async (req, res) => {
       primaryAirline,
       uniqueTfns,
       logLines: resultLines,
+      updatedAt: savedCfg.updatedAt,
     });
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -388,15 +734,28 @@ app.post('/api/sync-google-doc', async (req, res) => {
 });
 
 app.post('/api/check-google-sheet', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const globalCfg = getWorkspaceConfig();
   const {
-    credentials = DEFAULT_CREDENTIALS,
+    credentials: bodyCreds,
     sheetId = GOOGLE_SHEET_ID,
   } = req.body as {
     credentials?: ServiceAccountCredentials;
     sheetId?: string;
   };
 
-  const cleanSheetId = extractGoogleSheetId(sheetId || GOOGLE_SHEET_ID);
+  const credentials: ServiceAccountCredentials =
+    globalCfg.updatedAt > 0 &&
+    (!bodyCreds || bodyCreds.client_email === DEFAULT_CREDENTIALS.client_email)
+      ? globalCfg.credentials
+      : bodyCreds || globalCfg.credentials || DEFAULT_CREDENTIALS;
+
+  const incomingSheetId = extractGoogleSheetId(sheetId || '');
+  const globalSheetId = extractGoogleSheetId(globalCfg.googleSheetUrl || GOOGLE_SHEET_ID);
+  const cleanSheetId =
+    globalCfg.updatedAt > 0 && (!incomingSheetId || incomingSheetId === GOOGLE_SHEET_ID)
+      ? globalSheetId
+      : incomingSheetId || globalSheetId;
 
   try {
     const auth = new google.auth.GoogleAuth({
@@ -438,8 +797,10 @@ app.post('/api/check-google-sheet', async (req, res) => {
 });
 
 app.post('/api/sync-google-sheet', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const globalCfg = getWorkspaceConfig();
   const {
-    credentials = DEFAULT_CREDENTIALS,
+    credentials: bodyCreds,
     sheetId = GOOGLE_SHEET_ID,
     tabName = 'SEO',
     column = 'B',
@@ -458,12 +819,25 @@ app.post('/api/sync-google-sheet', async (req, res) => {
     rowsData?: { id: number; prefix: string; suffix: string; result: string }[];
   };
 
+  const credentials: ServiceAccountCredentials =
+    globalCfg.updatedAt > 0 &&
+    (!bodyCreds || bodyCreds.client_email === DEFAULT_CREDENTIALS.client_email)
+      ? globalCfg.credentials
+      : bodyCreds || globalCfg.credentials || DEFAULT_CREDENTIALS;
+
   if (!Array.isArray(links) || links.length === 0) {
     res.status(400).json({ error: 'No links provided to sync.' });
     return;
   }
 
-  const cleanSheetId = extractGoogleSheetId(sheetId || GOOGLE_SHEET_ID);
+  const cleanSheetId = extractGoogleSheetId(sheetId || globalCfg.googleSheetUrl || GOOGLE_SHEET_ID);
+  // Persist the active sheet destination globally so both Mac & Phone stay in sync
+  saveWorkspaceConfig({
+    googleSheetUrl: `https://docs.google.com/spreadsheets/d/${cleanSheetId}/edit`,
+    sheetTabName: (tabName || 'SEO').trim(),
+    sheetColumn: (column || 'B').trim().toUpperCase(),
+    sheetStartRow: Math.max(1, Number(startRow) || 3),
+  });
   const cleanTab = (tabName || '').trim();
   const cleanCol =
     (column || 'B')
@@ -784,14 +1158,128 @@ function buildFlexibleTfnRegex(tfn: string): RegExp | null {
   if (core.length === 10) {
     const p1 = core.slice(0, 3);
     const p2 = core.slice(3, 6);
-    const p3 = core.slice(6, 10);
+    const p3a = core.slice(6, 8);
+    const p3b = core.slice(8, 10);
+    const sep = `[-–—\\s._/•⚡*→~()\\[\\]{}+]{0,6}`;
     return new RegExp(
-      `(?:\\+?1[-–—\\s._/•⚡]*)?\\(?${p1}\\)?[-–—\\s._/•⚡]*${p2}[-–—\\s._/•⚡]*${p3}`,
+      `(?:\\+?1${sep})?[(\\[{]*${p1}[)\\]}]*${sep}${p2}${sep}${p3a}${sep}${p3b}`,
       'gi'
     );
   }
   const escaped = tfn.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return escaped ? new RegExp(escaped, 'gi') : null;
+}
+
+function checkTextContainsTfn(text: string, tfn: string, tfnRegex: RegExp | null): boolean {
+  if (!text || !tfn.trim()) return false;
+  const cleanText = text.replace(/\*\*/g, '');
+  if (tfnRegex) {
+    tfnRegex.lastIndex = 0;
+    if (tfnRegex.test(cleanText)) return true;
+  }
+  const targetDigits = tfn.replace(/[^\d]/g, '');
+  const core10 =
+    targetDigits.length === 11 && targetDigits.startsWith('1')
+      ? targetDigits.slice(1)
+      : targetDigits;
+  if (core10.length >= 7) {
+    const p1 = core10.slice(0, 3);
+    const p2 = core10.slice(3, 6);
+    const p3 = core10.slice(6, 10);
+    // Check decoded URL or compact digit sequences
+    try {
+      const decoded = decodeURIComponent(cleanText);
+      if (tfnRegex) {
+        tfnRegex.lastIndex = 0;
+        if (tfnRegex.test(decoded)) return true;
+      }
+    } catch {
+      // ignore
+    }
+    const looseRegex = new RegExp(`${p1}[^0-9a-zA-Z]{0,8}${p2}[^0-9a-zA-Z]{0,8}${p3}`, 'i');
+    if (looseRegex.test(cleanText)) return true;
+  }
+  return false;
+}
+
+function parseJinaDuckDuckGoMarkdown(
+  markdown: string,
+  tfn: string,
+  tfnRegex: RegExp | null
+): {
+  title: string;
+  link: string;
+  snippet: string;
+  hasTfn: boolean;
+  matchedIn: string[];
+}[] {
+  const items: {
+    title: string;
+    link: string;
+    snippet: string;
+    hasTfn: boolean;
+    matchedIn: string[];
+  }[] = [];
+  if (!markdown) return items;
+
+  const blocks = markdown.split(/^##\s+/m).slice(1);
+  for (const block of blocks) {
+    const titleLinkMatch = block.match(/^\[([^\]]+)\]\(([^)]+)\)/);
+    if (!titleLinkMatch) continue;
+    const rawTitle = titleLinkMatch[1].replace(/\*\*/g, '').trim();
+    let rawLink = titleLinkMatch[2].trim();
+    const uddgMatch = rawLink.match(/[?&]uddg=([^&\s)]+)/);
+    if (uddgMatch) {
+      try {
+        rawLink = decodeURIComponent(uddgMatch[1]);
+      } catch {
+        rawLink = uddgMatch[1];
+      }
+    }
+    if (rawLink.includes('duckduckgo.com/html')) continue;
+
+    // Extract snippet lines after the title/icon links
+    const restLines = block
+      .slice(titleLinkMatch[0].length)
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith('[![Image'));
+
+    const cleanedSnippets: string[] = [];
+    for (const line of restLines) {
+      // Strip outer markdown link wrapper [snippet](https://duckduckgo.com/...) even if snippet has inner [...]
+      const plain = line
+        .replace(/\]\(https?:\/\/[^)\s]+\)$/g, '')
+        .replace(/^\[/, '')
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+        .replace(/\*\*/g, '')
+        .trim();
+      if (plain && plain !== rawLink && !plain.startsWith('http')) {
+        cleanedSnippets.push(plain);
+      }
+    }
+    const snippet = cleanedSnippets.join(' ').slice(0, 420);
+
+    const matchedIn: string[] = [];
+    if (checkTextContainsTfn(rawLink, tfn, tfnRegex)) {
+      matchedIn.push('PDF / Site Address');
+    }
+    if (checkTextContainsTfn(rawTitle, tfn, tfnRegex)) {
+      matchedIn.push('Heading');
+    }
+    if (checkTextContainsTfn(snippet, tfn, tfnRegex)) {
+      matchedIn.push('Description');
+    }
+
+    items.push({
+      title: rawTitle || rawLink,
+      link: rawLink,
+      snippet,
+      hasTfn: matchedIn.length > 0,
+      matchedIn,
+    });
+  }
+  return items;
 }
 
 function stripHtmlTags(html: string): string {
@@ -844,128 +1332,156 @@ app.post('/api/check-rank-usa', async (req, res) => {
     link: string;
     snippet: string;
     hasTfn: boolean;
+    matchedIn?: string[];
   }[] = [];
 
-  try {
-    // 1. Query Google Server for the target country/city using UULE + gl + hl + cr + pws=0 (No-VPN geolocation override)
-    const googleTargetUrl = `https://${preset.googleDomain}/search?q=${encodeURIComponent(
-      query
-    )}&gl=${preset.gl}&hl=${preset.hl}&cr=${preset.cr}&pws=0&nfpr=1&gws_rd=cr&uule=${encodeURIComponent(
-      uule
-    )}&num=10&start=0`;
-
-    const gRes = await fetch(googleTargetUrl, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept-Language': preset.acceptLang,
-        Cookie: '', // Strictly Incognito (zero cookies)
-      },
+  const seenLinks = new Set<string>();
+  const addUniqueResult = (item: {
+    title: string;
+    link: string;
+    snippet: string;
+    hasTfn: boolean;
+    matchedIn?: string[];
+  }) => {
+    const normLink = item.link.replace(/\/+$/, '').toLowerCase();
+    if (seenLinks.has(normLink)) return;
+    seenLinks.add(normLink);
+    results.push({
+      position: results.length + 1,
+      ...item,
     });
+  };
 
-    if (gRes.ok) {
-      const html = await gRes.text();
-      if (!html.includes('Our systems have detected unusual traffic')) {
-        const h3Regex =
-          /<a\b[^>]*href="((?:https?:\/\/|\/url\?q=https?:\/\/)[^"]+)"[^>]*>[\s\S]*?<h3\b[^>]*>([\s\S]*?)<\/h3>/gi;
-        let m: RegExpExecArray | null;
-        while ((m = h3Regex.exec(html)) !== null && results.length < 10) {
-          let rawLink = m[1];
-          if (rawLink.startsWith('/url?q=')) {
-            rawLink = decodeURIComponent(rawLink.slice(7).split('&')[0]);
-          }
-          if (rawLink.includes('google.')) continue;
+  const digits = (tfn || '').replace(/[^\d]/g, '');
+  const core10 =
+    digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits;
+  const formattedCoreTfn =
+    core10.length === 10
+      ? `${core10.slice(0, 3)}-${core10.slice(3, 6)}-${core10.slice(6, 10)}`
+      : tfn.trim();
 
-          const title = stripHtmlTags(m[2]);
-          const afterIdx = m.index + m[0].length;
-          const surroundingHtml = html.slice(afterIdx, afterIdx + 1800);
-          const snippet = stripHtmlTags(surroundingHtml).slice(0, 340);
-          const combined = `${title} ${snippet}`;
-          const hasTfn = tfnRegex ? Boolean(combined.match(tfnRegex)) : false;
-
-          results.push({
-            position: results.length + 1,
-            title: title || rawLink,
-            link: rawLink,
-            snippet,
-            hasTfn,
-          });
-        }
-      }
-    }
-
-    // 2. Country-localized Page-1 fallback when Google CAPTCHAs automated cloud IPs
-    if (results.length === 0) {
-      const ddgRegionMap: Record<string, string> = {
-        us: 'us-en',
-        gb: 'uk-en',
-        ca: 'ca-en',
-        au: 'au-en',
-        in: 'in-en',
-        de: 'de-de',
-        fr: 'fr-fr',
-        es: 'es-es',
-        mx: 'mx-es',
-        sg: 'sg-en',
-      };
-      const kl = ddgRegionMap[preset.gl] || 'us-en';
-      const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(
+  try {
+    // 1. Direct Google Page-1 Check (if not rate-limited by datacenter IP)
+    try {
+      const googleTargetUrl = `https://${preset.googleDomain}/search?q=${encodeURIComponent(
         query
-      )}&kl=${kl}`;
-      const dRes = await fetch(ddgUrl, {
+      )}&gl=${preset.gl}&hl=${preset.hl}&cr=${preset.cr}&pws=0&nfpr=1&gws_rd=cr&uule=${encodeURIComponent(
+        uule
+      )}&num=10&start=0`;
+
+      const gRes = await fetch(googleTargetUrl, {
         headers: {
           'User-Agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
           'Accept-Language': preset.acceptLang,
+          Cookie: '',
         },
       });
-      if (dRes.ok) {
-        const dHtml = await dRes.text();
-        const blockRegex =
-          /<div class="result__body">([\s\S]*?)<\/div>\s*<\/div>/gi;
-        let bm: RegExpExecArray | null;
-        while ((bm = blockRegex.exec(dHtml)) !== null && results.length < 10) {
-          const block = bm[1];
-          const titleMatch = block.match(
-            /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i
-          );
-          const snippetMatch = block.match(
-            /<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/i
-          );
-          if (!titleMatch) continue;
-          let link = titleMatch[1];
-          const uddgMatch = link.match(/[?&]uddg=([^&]+)/);
-          if (uddgMatch) {
-            link = decodeURIComponent(uddgMatch[1]);
-          }
-          const title = stripHtmlTags(titleMatch[2]);
-          const snippet = snippetMatch ? stripHtmlTags(snippetMatch[1]) : '';
-          const combined = `${title} ${snippet}`;
-          const hasTfn = tfnRegex ? Boolean(combined.match(tfnRegex)) : false;
 
-          results.push({
-            position: results.length + 1,
-            title,
-            link,
-            snippet,
-            hasTfn,
+      if (gRes.ok) {
+        const html = await gRes.text();
+        if (!html.includes('Our systems have detected unusual traffic')) {
+          const h3Regex =
+            /<a\b[^>]*href="((?:https?:\/\/|\/url\?q=https?:\/\/)[^"]+)"[^>]*>[\s\S]*?<h3\b[^>]*>([\s\S]*?)<\/h3>/gi;
+          let m: RegExpExecArray | null;
+          while ((m = h3Regex.exec(html)) !== null && results.length < 10) {
+            let rawLink = m[1];
+            if (rawLink.startsWith('/url?q=')) {
+              rawLink = decodeURIComponent(rawLink.slice(7).split('&')[0]);
+            }
+            if (rawLink.includes('google.')) continue;
+
+            const title = stripHtmlTags(m[2]);
+            const afterIdx = m.index + m[0].length;
+            const surroundingHtml = html.slice(afterIdx, afterIdx + 1800);
+            const snippet = stripHtmlTags(surroundingHtml).slice(0, 380);
+            const matchedIn: string[] = [];
+            if (checkTextContainsTfn(rawLink, tfn, tfnRegex)) {
+              matchedIn.push('PDF / Site Address');
+            }
+            if (checkTextContainsTfn(title, tfn, tfnRegex)) {
+              matchedIn.push('Heading');
+            }
+            if (checkTextContainsTfn(snippet, tfn, tfnRegex)) {
+              matchedIn.push('Description');
+            }
+
+            addUniqueResult({
+              title: title || rawLink,
+              link: rawLink,
+              snippet,
+              hasTfn: matchedIn.length > 0,
+              matchedIn,
+            });
+          }
+        }
+      }
+    } catch {
+      // Fall through to Jina SERP reader
+    }
+
+    // 2. Multi-Query Page-1 Scan via Jina SERP Reader (checks exact Airline+Keyword+TFN, natural Airline+Keyword Page 1, and Airline+TFN)
+    const queriesToCheck: string[] = [];
+    if (formattedCoreTfn) {
+      queriesToCheck.push(`${query} "${formattedCoreTfn}"`);
+      if (airline.trim()) {
+        queriesToCheck.push(`${airline.trim()} "${formattedCoreTfn}"`);
+      }
+    }
+    queriesToCheck.push(query);
+
+    const uniqueQueries = Array.from(new Set(queriesToCheck.map((q) => q.trim()).filter(Boolean)));
+
+    const jinaResponses = await Promise.all(
+      uniqueQueries.slice(0, 3).map(async (qStr) => {
+        try {
+          const targetDdg = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(qStr)}`;
+          const jRes = await fetch(`https://r.jina.ai/${targetDdg}`, {
+            headers: { Accept: 'application/json' },
           });
+          if (!jRes.ok) return [];
+          const jData = (await jRes.json()) as { data?: { content?: string } };
+          return parseJinaDuckDuckGoMarkdown(jData.data?.content || '', tfn, tfnRegex);
+        } catch {
+          return [];
+        }
+      })
+    );
+
+    // Prioritize any Page-1 result that contains the TFN in its PDF URL, Heading, or Description
+    for (const batch of jinaResponses) {
+      for (const item of batch) {
+        if (item.hasTfn) {
+          addUniqueResult(item);
+        }
+      }
+    }
+    for (const batch of jinaResponses) {
+      for (const item of batch) {
+        if (results.length < 10) {
+          addUniqueResult(item);
         }
       }
     }
 
-    const matchedResults = results.filter((r) => r.hasTfn);
+    // Re-number positions 1..N cleanly
+    const finalResults = results.slice(0, 10).map((r, idx) => ({
+      ...r,
+      position: idx + 1,
+    }));
+
+    const matchedResults = finalResults.filter((r) => r.hasTfn);
     res.json({
       query,
       tfn,
       page: 1,
       locationCode: preset.code,
-      region: `${preset.label} (${canonicalPlace} · No-VPN UULE + Incognito)`,
+      region: `${preset.label} (${canonicalPlace})`,
       uule,
       found: matchedResults.length > 0,
       matchCount: matchedResults.length,
       matchedResults,
-      results: results.slice(0, 10),
+      results: finalResults,
     });
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);

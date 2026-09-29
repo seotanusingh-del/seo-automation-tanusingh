@@ -8,15 +8,10 @@ import {
   Search,
   Rocket,
   X,
-  Eye,
-  Shield,
   CheckCircle2,
   AlertCircle,
   Loader2,
-  Download,
-  Globe,
-  Terminal,
-  Info,
+  RotateCcw,
 } from 'lucide-react';
 import {
   RANK_CHECKER_AIRLINES,
@@ -31,6 +26,7 @@ interface SerpResultItem {
   link: string;
   snippet: string;
   hasTfn: boolean;
+  matchedIn?: string[];
 }
 
 interface AirlineScanResult {
@@ -78,15 +74,9 @@ function buildTfnTextFragment(tfn: string): string {
 }
 
 /**
- * Builds a No-VPN Geolocated Google Search URL for ANY country/city in the world:
- * - Uses the selected country's Google domain (e.g. www.google.com, www.google.co.uk, www.google.ca)
- * - Injects official Google UULE geolocation parameter (uule=w+CAIQICI...) so no VPN is needed
- * - Adds gl=<country>, hl=<lang>, cr=country<CC>, gws_rd=cr (disables IP country redirect)
- * - Adds pws=0 & nfpr=1 (non-personalized Incognito SERP mode, zero history/cookie bias)
- * - Adds num=10&start=0 (Strictly Page 1 Only)
- * - Appends #:~:text=... fragment so Chrome automatically scrolls to & highlights the TFN on Page 1
+ * Builds a Geolocated Google Search URL for Page 1 with automatic TFN highlight fragment
  */
-function buildNoVpnGooglePage1Url(
+function buildGooglePage1Url(
   airline: string,
   keyword: string,
   tfn: string,
@@ -104,10 +94,11 @@ function buildNoVpnGooglePage1Url(
 }
 
 /**
- * Highlights all occurrences of the Targeted TFN (in any formatting) inside a text string
+ * Highlights all occurrences of the Targeted TFN (in any formatting, including inside PDF URLs, Headings, or Descriptions)
  */
 function highlightTfnInText(text: string, tfn: string): React.ReactNode {
   if (!text || !tfn.trim()) return text;
+  const cleanText = text.replace(/\*\*/g, '');
   const digits = tfn.replace(/[^\d]/g, '');
   const core =
     digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits;
@@ -116,22 +107,25 @@ function highlightTfnInText(text: string, tfn: string): React.ReactNode {
   if (core.length === 10) {
     const p1 = core.slice(0, 3);
     const p2 = core.slice(3, 6);
-    const p3 = core.slice(6, 10);
+    const p3a = core.slice(6, 8);
+    const p3b = core.slice(8, 10);
+    const sep = `[-–—\\s._/•⚡*→~()\\[\\]{}+]{0,6}`;
     regex = new RegExp(
-      `((?:\\+?1[-–—\\s._/•⚡]*)?\\(?${p1}\\)?[-–—\\s._/•⚡]*${p2}[-–—\\s._/•⚡]*${p3})`,
+      `((?:\\+?1${sep})?[(\\[{]*${p1}[)\\]}]*${sep}${p2}${sep}${p3a}${sep}${p3b})`,
       'gi'
     );
   } else {
     const escaped = tfn.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    if (!escaped) return text;
+    if (!escaped) return cleanText;
     regex = new RegExp(`(${escaped})`, 'gi');
   }
 
-  const parts = text.split(regex);
-  if (parts.length === 1) return text;
+  const parts = cleanText.split(regex);
+  if (parts.length === 1) return cleanText;
 
-  return parts.map((part, idx) =>
-    regex.test(part) ? (
+  return parts.map((part, idx) => {
+    regex.lastIndex = 0;
+    return regex.test(part) ? (
       <mark
         key={idx}
         className="bg-yellow-300 text-slate-950 font-bold px-1 py-0.5 rounded border border-yellow-500"
@@ -140,8 +134,8 @@ function highlightTfnInText(text: string, tfn: string): React.ReactNode {
       </mark>
     ) : (
       <React.Fragment key={idx}>{part}</React.Fragment>
-    )
-  );
+    );
+  });
 }
 
 export const RankCheckerPanel: React.FC = () => {
@@ -153,20 +147,24 @@ export const RankCheckerPanel: React.FC = () => {
   const [customLocationPlace, setCustomLocationPlace] = useState<string>(() => {
     return localStorage.getItem('seo_rank_custom_place') || '';
   });
-  const [showNoVpnGuide, setShowNoVpnGuide] = useState(false);
 
   const [filterAirline, setFilterAirline] = useState('');
+  const [deletedAirlines, setDeletedAirlines] = useState<string[]>([]);
   const [customUrls, setCustomUrls] = useState<Record<string, string>>({});
   const [copiedAirline, setCopiedAirline] = useState<string | null>(null);
-  const [copiedCmdAirline, setCopiedCmdAirline] = useState<string | null>(null);
+  const [openedAirline, setOpenedAirline] = useState<string | null>(null);
   const [editingAirline, setEditingAirline] = useState<string | null>(null);
   const [editUrlInput, setEditUrlInput] = useState('');
+  const [savedUrlFlash, setSavedUrlFlash] = useState(false);
 
-  // Live Page-1 No-VPN Incognito TFN Scanner state
+  // Page-1 TFN Scanner state
   const [scanningAirlines, setScanningAirlines] = useState<Record<string, boolean>>({});
   const [scanResults, setScanResults] = useState<Record<string, AirlineScanResult>>({});
   const [activePreviewAirline, setActivePreviewAirline] = useState<string | null>(null);
-  const [isBatchScanning, setIsBatchScanning] = useState(false);
+  const [isBulkSearching, setIsBulkSearching] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number } | null>(
+    null
+  );
 
   const activePreset = useMemo(() => {
     return (
@@ -179,7 +177,7 @@ export const RankCheckerPanel: React.FC = () => {
   const activeUule = useMemo(() => encodeGoogleUule(activePlaceName), [activePlaceName]);
 
   const [logs, setLogs] = useState<string[]>([
-    `[${new Date().toLocaleTimeString()}] Ready. No-VPN Geolocation (${activePreset.label}, UULE=${activeUule.slice(0, 18)}..., pws=0 Incognito, Page 1 Only) + Auto TFN Highlighting active.`,
+    `[${new Date().toLocaleTimeString()}] Ready. Enter Targeted TFN & Keyword above, then click "TFN Check" on any row or "Bulk TFN Num Search".`,
   ]);
 
   const handleLocationChange = (code: string) => {
@@ -188,9 +186,7 @@ export const RankCheckerPanel: React.FC = () => {
     setCustomUrls({});
     const found =
       SERP_COUNTRY_LOCATIONS.find((l) => l.code === code) || SERP_COUNTRY_LOCATIONS[0];
-    addLog(
-      `Switched Server Location to ${found.label} (gl=${found.gl}, domain=${found.googleDomain}, No-VPN UULE active).`
-    );
+    addLog(`Switched target location to ${found.label} (${found.googleDomain}).`);
   };
 
   const handleCustomPlaceChange = (val: string) => {
@@ -203,13 +199,14 @@ export const RankCheckerPanel: React.FC = () => {
     const result: { airline: string; url: string }[] = [];
 
     for (const airline of RANK_CHECKER_AIRLINES) {
+      if (deletedAirlines.includes(airline)) continue;
       if (
         filterAirline.trim() &&
         !airline.toLowerCase().includes(filterAirline.trim().toLowerCase())
       ) {
         continue;
       }
-      const defaultUrl = buildNoVpnGooglePage1Url(
+      const defaultUrl = buildGooglePage1Url(
         airline,
         searchKeyword,
         tfnToFind,
@@ -222,7 +219,15 @@ export const RankCheckerPanel: React.FC = () => {
       });
     }
     return result;
-  }, [searchKeyword, tfnToFind, customUrls, filterAirline, activePreset, customLocationPlace]);
+  }, [
+    searchKeyword,
+    tfnToFind,
+    customUrls,
+    filterAirline,
+    activePreset,
+    customLocationPlace,
+    deletedAirlines,
+  ]);
 
   function addLog(message: string) {
     const nowStr = new Date().toLocaleTimeString();
@@ -234,40 +239,23 @@ export const RankCheckerPanel: React.FC = () => {
       await navigator.clipboard.writeText(url);
       setCopiedAirline(airline);
       setTimeout(() => setCopiedAirline(null), 1500);
-      addLog(
-        `Copied ${activePreset.code} No-VPN Page-1 URL for ${airline} (Paste into Ctrl+Shift+N Incognito tab)`
-      );
+      addLog(`Copied Page-1 URL for ${airline}`);
     } catch {
       // ignore
     }
   };
 
-  /**
-   * Copies a ready-to-run `chrome --incognito "<url>"` command for Win+R / Terminal
-   * so the user can open a native OS Incognito window in 1 second.
-   */
-  const handleCopyIncognitoCommand = async (airline: string, url: string) => {
-    const isMac =
-      typeof navigator !== 'undefined' &&
-      navigator.platform.toLowerCase().includes('mac');
-    const cmd = isMac
-      ? `open -na "Google Chrome" --args --incognito "${url}"`
-      : `chrome --incognito "${url}"`;
-    try {
-      await navigator.clipboard.writeText(cmd);
-      setCopiedCmdAirline(airline);
-      setTimeout(() => setCopiedCmdAirline(null), 1800);
-      addLog(
-        `Copied native Chrome --incognito command for ${airline}! Press ${
-          isMac ? 'Cmd+Space (Terminal)' : 'Win+R (Run)'
-        } and paste to open native Incognito window.`
-      );
-    } catch {
-      // ignore
-    }
+  const handleDeleteRow = (airline: string) => {
+    setDeletedAirlines((prev) => (prev.includes(airline) ? prev : [...prev, airline]));
+    addLog(`Deleted ${airline} from Rank Checker list.`);
   };
 
-  const runPage1NoVpnScan = async (airline: string, openModalAfter = false) => {
+  const handleRestoreDeleted = () => {
+    setDeletedAirlines([]);
+    addLog(`Restored all ${RANK_CHECKER_AIRLINES.length} airlines.`);
+  };
+
+  const runTfnCheck = async (airline: string, openModalAfter = true) => {
     const tfn = tfnToFind.trim();
     setScanningAirlines((prev) => ({ ...prev, [airline]: true }));
     try {
@@ -298,11 +286,11 @@ export const RankCheckerPanel: React.FC = () => {
         setScanResults((prev) => ({ ...prev, [airline]: record }));
         if (record.found) {
           addLog(
-            `✅ [PAGE 1 HIT · ${activePreset.code}] ${airline} — Targeted TFN (${tfn}) FOUND ${record.matchCount} time(s) on Page 1!`
+            `✅ [PAGE 1 HIT] ${airline} — TFN (${tfn}) FOUND in ${record.matchCount} result(s) on Page 1!`
           );
         } else {
           addLog(
-            `❌ [PAGE 1 MISS · ${activePreset.code}] ${airline} — Targeted TFN (${tfn}) NOT found on Page 1.`
+            `❌ [PAGE 1 MISS] ${airline} — TFN (${tfn}) NOT found on Page 1.`
           );
         }
         if (openModalAfter) {
@@ -310,7 +298,7 @@ export const RankCheckerPanel: React.FC = () => {
         }
       }
     } catch {
-      addLog(`Scan warning for ${airline}: Could not reach SERP proxy.`);
+      addLog(`TFN Check error for ${airline}: Could not reach SERP checker.`);
     } finally {
       setScanningAirlines((prev) => ({ ...prev, [airline]: false }));
     }
@@ -318,15 +306,14 @@ export const RankCheckerPanel: React.FC = () => {
 
   const handleOpenSingle = async (airline: string) => {
     const tfn = tfnToFind.trim() || 'N/A';
+    setOpenedAirline(airline);
+    setTimeout(() => setOpenedAirline(null), 1200);
     try {
       await navigator.clipboard.writeText(tfn);
     } catch {
       // ignore
     }
-    addLog(
-      `${airline} — Opened ${activePreset.label} (${activePlaceName}) Page 1 Only (pws=0 Incognito, UULE No-VPN, TFN: ${tfn})`
-    );
-    runPage1NoVpnScan(airline, false);
+    addLog(`${airline} — Opened ${activePreset.label} Page 1 (TFN: ${tfn})`);
   };
 
   const handleOpenBatch = async () => {
@@ -340,78 +327,28 @@ export const RankCheckerPanel: React.FC = () => {
       window.open(url, '_blank', 'noopener,noreferrer');
     });
     addLog(
-      `Opened batch of ${Math.min(10, linksData.length)} ${activePreset.label} Page-1 queries with TFN (${tfn}) auto-highlight.`
+      `Opened batch of ${Math.min(10, linksData.length)} Page-1 queries with TFN (${tfn}) highlight.`
     );
   };
 
-  const handleBatchScanPage1 = async () => {
-    if (isBatchScanning) return;
-    setIsBatchScanning(true);
+  const handleBulkTfnSearch = async () => {
+    if (isBulkSearching || linksData.length === 0) return;
+    setIsBulkSearching(true);
+    const total = linksData.length;
+    setBulkProgress({ current: 0, total });
     addLog(
-      `Scanning ${activePreset.label} (${activePlaceName}) Page 1 (No-VPN Incognito) for TFN (${tfnToFind})...`
+      `Starting Bulk TFN Search across ${total} airlines for TFN (${tfnToFind})...`
     );
     try {
-      for (const item of linksData.slice(0, 12)) {
-        await runPage1NoVpnScan(item.airline, false);
+      for (let i = 0; i < linksData.length; i++) {
+        setBulkProgress({ current: i + 1, total });
+        await runTfnCheck(linksData[i].airline, false);
       }
+      addLog(`Completed Bulk TFN Search across ${total} airlines!`);
     } finally {
-      setIsBatchScanning(false);
+      setIsBulkSearching(false);
+      setBulkProgress(null);
     }
-  };
-
-  /**
-   * Downloads a 1-click native Chrome --incognito launcher (.bat on Windows / .command on Mac)
-   * that opens a real OS-level Chrome Incognito window on the chosen country's Google Server!
-   */
-  const downloadChromeIncognitoLauncher = (
-    singleUrl?: string,
-    airlineName?: string
-  ) => {
-    const targetUrls = singleUrl
-      ? [singleUrl]
-      : linksData.slice(0, 10).map((d) => d.url);
-
-    const isMac =
-      typeof navigator !== 'undefined' &&
-      navigator.platform.toLowerCase().includes('mac');
-
-    if (isMac) {
-      const shLines = [
-        '#!/usr/bin/env bash',
-        `# Opens ${activePreset.label} (Page 1 Only, No-VPN UULE) in Native Chrome Incognito Mode`,
-        ...targetUrls.map(
-          (u) => `open -na "Google Chrome" --args --incognito "${u}"`
-        ),
-      ];
-      const blob = new Blob([shLines.join('\n')], { type: 'text/plain' });
-      const objUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = objUrl;
-      a.download = airlineName
-        ? `open-${airlineName.toLowerCase().replace(/\s+/g, '-')}-${activePreset.code.toLowerCase()}-incognito.command`
-        : `open-google-${activePreset.code.toLowerCase()}-incognito-batch.command`;
-      a.click();
-      URL.revokeObjectURL(objUrl);
-    } else {
-      const batLines = [
-        '@echo off',
-        `REM Opens ${activePreset.label} (Page 1 Only, No-VPN UULE) in Native Chrome Incognito Mode`,
-        ...targetUrls.map((u) => `start chrome --incognito "${u}"`),
-      ];
-      const blob = new Blob([batLines.join('\r\n')], { type: 'text/plain' });
-      const objUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = objUrl;
-      a.download = airlineName
-        ? `open-${airlineName.toLowerCase().replace(/\s+/g, '-')}-${activePreset.code.toLowerCase()}-incognito.bat`
-        : `open-google-${activePreset.code.toLowerCase()}-incognito-batch.bat`;
-      a.click();
-      URL.revokeObjectURL(objUrl);
-    }
-
-    addLog(
-      `Downloaded native Chrome --incognito launcher for ${activePreset.label} (${targetUrls.length} URL(s)). Double-click the downloaded file to launch a real Chrome Incognito window!`
-    );
   };
 
   const saveCustomUrl = () => {
@@ -421,7 +358,11 @@ export const RankCheckerPanel: React.FC = () => {
       setCustomUrls((prev) => ({ ...prev, [editingAirline]: trimmed }));
       addLog(`Updated custom target URL for ${editingAirline}`);
     }
-    setEditingAirline(null);
+    setSavedUrlFlash(true);
+    setTimeout(() => {
+      setSavedUrlFlash(false);
+      setEditingAirline(null);
+    }, 350);
   };
 
   const clearLogs = () => {
@@ -432,116 +373,35 @@ export const RankCheckerPanel: React.FC = () => {
     ? scanResults[activePreviewAirline]
     : null;
 
+  const totalHitsCount = useMemo(() => {
+    return Object.values(scanResults).filter((r) => r.found).length;
+  }, [scanResults]);
+
   return (
     <div className="flex flex-col gap-5">
-      {/* Top Banner: No-VPN Multi-Country Server + Native Incognito Controls (Clean Light UI) */}
-      <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 flex flex-col gap-4 shadow-xs">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 text-xs font-bold text-blue-700">
-                <Globe className="w-4 h-4 text-blue-600" />
-                No-VPN Global Server: {activePreset.label}
-              </span>
-              <span className="text-slate-300">·</span>
-              <span className="inline-flex items-center gap-1 text-[11px] font-mono text-emerald-700 font-semibold">
-                <Shield className="w-3.5 h-3.5 text-emerald-600" />
-                gl={activePreset.gl} · {activePreset.cr} · pws=0 (Incognito) · Page 1 Only
-              </span>
-            </div>
-            <p className="text-xs text-slate-600 leading-relaxed">
-              <strong>Browse Any Country Without a VPN:</strong> Every query injects Google&rsquo;s official{' '}
-              <code className="text-blue-700 bg-blue-50 px-1 rounded">uule={activeUule.slice(0, 20)}...</code> geolocation token +{' '}
-              <code className="text-blue-700 bg-blue-50 px-1 rounded">gws_rd=cr</code> + <code className="text-blue-700 bg-blue-50 px-1 rounded">pws=0</code> to force{' '}
-              <strong>{activePlaceName}</strong> results without a VPN. For <strong>Incognito Mode</strong>: click{' '}
-              <strong>In-App Incognito P1</strong> (zero cookies inside the app), <strong>Right-Click &ldquo;Open {activePreset.code} P1&rdquo; &rarr; Open link in incognito window</strong>, or use the <strong>1-Click Native Chrome --incognito Launcher</strong>.
-            </p>
+      {/* Top Progress Loader Bar when Bulk TFN Search is running */}
+      {isBulkSearching && bulkProgress && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-3.5 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 text-xs font-bold text-blue-900">
+            <Loader2 className="w-4 h-4 text-blue-600 animate-spin shrink-0" />
+            <span>
+              Running Bulk TFN Num Search ({bulkProgress.current} of{' '}
+              {bulkProgress.total} airlines)... Checking PDF URLs, Headings &amp;
+              Descriptions on Page 1
+            </span>
           </div>
-
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => setShowNoVpnGuide((v) => !v)}
-              className="h-9 px-3 bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
-            >
-              <Info className="w-3.5 h-3.5 text-blue-600" />
-              <span>{showNoVpnGuide ? 'Hide No-VPN & Incognito Guide' : 'How No-VPN & Incognito Work'}</span>
-            </button>
-
-            <button
-              type="button"
-              disabled={isBatchScanning}
-              onClick={handleBatchScanPage1}
-              className="h-9 px-3.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
-            >
-              {isBatchScanning ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Eye className="w-3.5 h-3.5" />
-              )}
-              <span>
-                {isBatchScanning
-                  ? `Scanning ${activePreset.code} P1...`
-                  : `Scan Top 12 (${activePreset.code} Page 1)`}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => downloadChromeIncognitoLauncher()}
-              className="h-9 px-3.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
-              title="Downloads a 1-click launcher that opens native Chrome with --incognito on the selected country server"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Launch Native Chrome Incognito (.bat)</span>
-            </button>
-          </div>
+          <span className="px-2.5 py-0.5 rounded-full bg-blue-600 text-white text-[11px] font-mono font-bold">
+            {Math.round((bulkProgress.current / bulkProgress.total) * 100)}%
+          </span>
         </div>
+      )}
 
-        {/* Collapsible Explanation: How to Browse Any Country Without VPN & Why/How Incognito Works */}
-        {showNoVpnGuide && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-3 border-t border-slate-200 text-xs">
-            <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200 space-y-1.5">
-              <div className="font-bold text-blue-700 flex items-center gap-1.5">
-                <span>01. How We Bypass VPN (Google UULE Token)</span>
-              </div>
-              <p className="text-slate-600 leading-relaxed">
-                Normally you need a VPN because Google checks your IP. We eliminate the VPN by encoding your chosen Country/City (<code>{activePlaceName}</code>) into Google&rsquo;s official Protobuf parameter (<code>uule={activeUule}</code>) combined with <code>gl={activePreset.gl}</code>, <code>cr={activePreset.cr}</code>, and <code>gws_rd=cr</code> (which stops Google from redirecting to your local country IP).
-              </p>
-            </div>
-
-            <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200 space-y-1.5">
-              <div className="font-bold text-emerald-700 flex items-center gap-1.5">
-                <span>02. Why Web Buttons Cannot Directly Open Chrome Incognito</span>
-              </div>
-              <p className="text-slate-600 leading-relaxed">
-                For browser security, Chrome/Edge/Brave block normal webpage JavaScript (<code>window.open</code>) from spawning an OS-level Incognito window directly. Instead, we give you <strong>3 instant ways</strong> to browse in true Incognito:
-              </p>
-              <ul className="list-disc list-inside text-slate-600 space-y-0.5">
-                <li><strong>Right-click &ldquo;Open {activePreset.code} P1&rdquo;</strong> &rarr; <em>Open link in incognito window</em></li>
-                <li>Click <strong>Cmd</strong> on any row &rarr; Press <code>Win+R</code> &rarr; Paste &rarr; Opens native <code>chrome --incognito</code></li>
-                <li>Click <strong>In-App Incognito P1</strong> to scan &amp; highlight Page 1 via our zero-cookie backend proxy</li>
-              </ul>
-            </div>
-
-            <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200 space-y-1.5">
-              <div className="font-bold text-slate-900 flex items-center gap-1.5">
-                <span>03. Page-1 Only + Auto Yellow TFN Highlight</span>
-              </div>
-              <p className="text-slate-600 leading-relaxed">
-                Every URL includes <code>&amp;num=10&amp;start=0</code> (strictly Page 1 top 10 results) plus Chrome&rsquo;s Scroll-To-Text fragment (<code>#:~:text={tfnToFind}</code>) so if your Targeted TFN appears anywhere on Page 1, Chrome automatically scrolls to it and highlights it in yellow.
-              </p>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Country Location Selector + TFN + Keyword Setup */}
+      {/* Country Location Selector + TFN + Keyword + Bulk TFN Search Controls */}
       <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
           <div className="md:col-span-5">
             <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-              1. Select Target Country / Google Server (No VPN Needed)
+              1. Select Target Country / Google Server
             </label>
             <select
               value={selectedLocationCode}
@@ -558,13 +418,13 @@ export const RankCheckerPanel: React.FC = () => {
 
           <div className="md:col-span-4">
             <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-              Optional Custom City / Region Override (Any Location Worldwide)
+              Optional Custom City / Region Override
             </label>
             <input
               type="text"
               value={customLocationPlace}
               onChange={(e) => handleCustomPlaceChange(e.target.value)}
-              placeholder={`Default: ${activePreset.canonicalPlace} (or type e.g. Miami,Florida,United States)`}
+              placeholder={`Default: ${activePreset.canonicalPlace}`}
               className="w-full h-10 px-3.5 rounded-lg border border-slate-300 bg-white text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
             />
           </div>
@@ -572,19 +432,19 @@ export const RankCheckerPanel: React.FC = () => {
           <div className="md:col-span-3">
             <div className="h-10 px-3 rounded-lg bg-slate-50 border border-slate-200 flex flex-col justify-center">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                Active No-VPN UULE Location
+                Active Location &amp; Hits
               </span>
               <span className="text-xs font-mono text-slate-800 truncate">
-                {activePlaceName}
+                {activePlaceName} · Hits: {totalHitsCount}
               </span>
             </div>
           </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end pt-2 border-t border-slate-100">
-          <div className="md:col-span-4">
+          <div className="md:col-span-3">
             <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-              2. Targeted TFN Number to Find &amp; Highlight on Page 1
+              2. Targeted TFN Number to Find &amp; Highlight
             </label>
             <input
               type="text"
@@ -595,10 +455,9 @@ export const RankCheckerPanel: React.FC = () => {
             />
           </div>
 
-          <div className="md:col-span-5">
+          <div className="md:col-span-4">
             <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-              3. Search Keyword (Updates All {RANK_CHECKER_AIRLINES.length}{' '}
-              {activePreset.code} Page-1 Queries)
+              3. Search Keyword
             </label>
             <input
               type="text"
@@ -615,11 +474,37 @@ export const RankCheckerPanel: React.FC = () => {
           <div className="md:col-span-3">
             <button
               type="button"
+              disabled={isBulkSearching || linksData.length === 0}
+              onClick={handleBulkTfnSearch}
+              className="w-full h-10 px-4 bg-emerald-600 hover:bg-emerald-700 active:scale-95 disabled:opacity-50 text-white text-xs sm:text-sm font-semibold rounded-lg transition-all flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer shadow-xs"
+            >
+              {isBulkSearching ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>
+                    Searching{' '}
+                    {bulkProgress
+                      ? `${bulkProgress.current}/${bulkProgress.total}`
+                      : '...'}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Search className="w-4 h-4" />
+                  <span>Bulk TFN Num Search</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          <div className="md:col-span-2">
+            <button
+              type="button"
               onClick={handleOpenBatch}
-              className="w-full h-10 px-4 bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-semibold rounded-lg transition-colors flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer"
+              className="w-full h-10 px-3 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white text-xs sm:text-sm font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer shadow-xs"
             >
               <Rocket className="w-4 h-4" />
-              <span>Open {activePreset.code} Page-1 Batch</span>
+              <span>Bulk Open</span>
             </button>
           </div>
         </div>
@@ -630,12 +515,22 @@ export const RankCheckerPanel: React.FC = () => {
         <div className="px-5 py-3.5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 bg-slate-50/60">
           <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900">
             <span>
-              {activePreset.label} ({activePlaceName}) · Page-1 Search Targets
+              {activePreset.label} · Page-1 Search Targets
             </span>
             <span className="text-slate-400">·</span>
             <span className="font-mono text-xs text-slate-600 tabular-nums">
-              Total Queries: {linksData.length}
+              Showing {linksData.length} of {RANK_CHECKER_AIRLINES.length}
             </span>
+            {deletedAirlines.length > 0 && (
+              <button
+                type="button"
+                onClick={handleRestoreDeleted}
+                className="px-2.5 py-1 rounded-md bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer transition-all active:scale-95"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Restore Deleted ({deletedAirlines.length})</span>
+              </button>
+            )}
           </div>
 
           <div className="relative">
@@ -650,7 +545,7 @@ export const RankCheckerPanel: React.FC = () => {
           </div>
         </div>
 
-        <div className="fast-scroll-container max-h-[420px] divide-y divide-slate-100">
+        <div className="fast-scroll-container max-h-[460px] divide-y divide-slate-100">
           {linksData.map(({ airline, url }, idx) => {
             const scan = scanResults[airline];
             const isScanning = Boolean(scanningAirlines[airline]);
@@ -659,10 +554,14 @@ export const RankCheckerPanel: React.FC = () => {
               <div
                 key={airline}
                 className={`fast-scroll-row flex flex-wrap sm:flex-nowrap items-center gap-3 px-4 py-2.5 transition-colors ${
-                  idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/60'
+                  scan?.found
+                    ? 'bg-yellow-50/80'
+                    : idx % 2 === 0
+                    ? 'bg-white'
+                    : 'bg-slate-50/60'
                 } hover:bg-slate-100/80`}
               >
-                <div className="w-44 shrink-0 flex items-center gap-2">
+                <div className="w-48 shrink-0 flex items-center gap-2">
                   <span className="text-xs sm:text-sm font-bold text-slate-900 truncate">
                     {airline}
                   </span>
@@ -670,14 +569,14 @@ export const RankCheckerPanel: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => setActivePreviewAirline(airline)}
-                      className={`px-1.5 py-0.5 text-[10px] font-bold rounded cursor-pointer shrink-0 ${
+                      className={`px-2 py-0.5 text-[10px] font-bold rounded cursor-pointer shrink-0 transition-all active:scale-95 ${
                         scan.found
-                          ? 'bg-yellow-300 text-slate-950 border border-yellow-500'
+                          ? 'bg-yellow-300 text-slate-950 border border-yellow-500 shadow-2xs'
                           : 'bg-slate-200 text-slate-700'
                       }`}
                       title="Click to view Page 1 results & TFN highlights"
                     >
-                      {scan.found ? `P1 HIT (${scan.matchCount})` : 'P1: 0'}
+                      {scan.found ? `TFN HIT (${scan.matchCount})` : 'No TFN Hit'}
                     </button>
                   )}
                 </div>
@@ -689,63 +588,68 @@ export const RankCheckerPanel: React.FC = () => {
                   className="flex-1 min-w-[160px] bg-transparent text-xs font-mono text-slate-600 focus:outline-none truncate"
                 />
 
+                {/* ONLY the 5 required buttons: TFN Check, Edit, Open, Copy, Delete */}
                 <div className="flex items-center gap-1.5 shrink-0 ml-auto">
-                  {/* 1. In-App No-VPN Incognito Page-1 Scanner & Highlighter */}
+                  {/* 1. TFN Num Check Button */}
                   <button
                     type="button"
                     disabled={isScanning}
-                    onClick={() => runPage1NoVpnScan(airline, true)}
-                    className="px-2.5 py-1.5 text-xs font-semibold text-slate-900 bg-yellow-200 hover:bg-yellow-300 border border-yellow-400 rounded-md transition-colors flex items-center gap-1 whitespace-nowrap cursor-pointer"
-                    title="Browse Page 1 inside the app (Zero Cookies / No-VPN Server Proxy) & Highlight Targeted TFN"
+                    onClick={() => runTfnCheck(airline, true)}
+                    className="px-2.5 py-1.5 text-xs font-semibold text-slate-900 bg-yellow-200 hover:bg-yellow-300 active:scale-95 border border-yellow-400 rounded-md transition-all flex items-center gap-1 whitespace-nowrap cursor-pointer"
+                    title="Check Page 1 for TFN in PDF URL, Heading, or Description & Highlight Matches"
                   >
                     {isScanning ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <Eye className="w-3.5 h-3.5" />
-                    )}
-                    <span className="hidden md:inline">
-                      {isScanning ? 'Scanning P1...' : 'In-App Incognito P1'}
-                    </span>
-                  </button>
-
-                  {/* 2. Copy Native `chrome --incognito` command */}
-                  <button
-                    type="button"
-                    onClick={() => handleCopyIncognitoCommand(airline, url)}
-                    className="px-2 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-md transition-colors flex items-center gap-1 whitespace-nowrap cursor-pointer"
-                    title="Copy native `chrome --incognito` command (Paste in Win+R or Terminal to launch a real Chrome Incognito window)"
-                  >
-                    {copiedCmdAirline === airline ? (
                       <>
-                        <Check className="w-3.5 h-3.5 text-emerald-600" />
-                        <span className="hidden lg:inline text-emerald-700">Cmd Copied</span>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Checking...</span>
                       </>
                     ) : (
                       <>
-                        <Terminal className="w-3.5 h-3.5" />
-                        <span className="hidden lg:inline">Incognito Cmd</span>
+                        <Search className="w-3.5 h-3.5" />
+                        <span>TFN Check</span>
                       </>
                     )}
                   </button>
 
-                  {/* 3. Edit URL */}
+                  {/* 2. Edit Button */}
                   <button
                     type="button"
                     onClick={() => {
                       setEditingAirline(airline);
                       setEditUrlInput(url);
                     }}
-                    className="px-2 py-1.5 text-xs font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 rounded-md transition-colors flex items-center gap-1 whitespace-nowrap cursor-pointer"
+                    className="px-2.5 py-1.5 text-xs font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 active:scale-95 rounded-md transition-all flex items-center gap-1 whitespace-nowrap cursor-pointer"
                   >
                     <Edit3 className="w-3.5 h-3.5" />
-                    <span className="hidden xl:inline">Edit</span>
+                    <span>Edit</span>
                   </button>
 
-                  {/* 4. Copy URL */}
+                  {/* 3. Open Button */}
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={() => handleOpenSingle(airline)}
+                    className="px-2.5 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 active:scale-95 rounded-md transition-all inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
+                  >
+                    {openedAirline === airline ? (
+                      <>
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Opened</span>
+                      </>
+                    ) : (
+                      <>
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>Open</span>
+                      </>
+                    )}
+                  </a>
+
+                  {/* 4. Copy Button */}
                   <button
                     type="button"
                     onClick={() => handleCopyUrl(airline, url)}
-                    className="px-2.5 py-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-md transition-colors flex items-center gap-1 whitespace-nowrap cursor-pointer"
+                    className="px-2.5 py-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 active:scale-95 rounded-md transition-all flex items-center gap-1 whitespace-nowrap cursor-pointer"
                   >
                     {copiedAirline === airline ? (
                       <>
@@ -760,18 +664,16 @@ export const RankCheckerPanel: React.FC = () => {
                     )}
                   </button>
 
-                  {/* 5. Real <a> anchor tag: Left-Click opens No-VPN Google Page 1 with TFN highlight; Right-Click -> "Open link in incognito window" */}
-                  <a
-                    href={url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={() => handleOpenSingle(airline)}
-                    className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
-                    title={`Left-Click to open ${activePreset.label} Page 1 (No-VPN UULE + TFN Highlight) OR Right-Click -> "Open link in incognito window"`}
+                  {/* 5. Delete Button */}
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteRow(airline)}
+                    className="px-2 py-1.5 text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 active:scale-95 rounded-md transition-all flex items-center gap-1 whitespace-nowrap cursor-pointer"
+                    title={`Delete ${airline} row`}
                   >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    <span>Open {activePreset.code} P1</span>
-                  </a>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span className="hidden lg:inline">Delete</span>
+                  </button>
                 </div>
               </div>
             );
@@ -783,12 +685,12 @@ export const RankCheckerPanel: React.FC = () => {
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
         <div className="px-5 py-3 border-b border-slate-200 flex items-center justify-between bg-slate-50/60">
           <span className="text-xs font-bold text-slate-800">
-            No-VPN Global Server &amp; Page-1 TFN Tracking Log
+            Page-1 TFN Check Activity Log
           </span>
           <button
             type="button"
             onClick={clearLogs}
-            className="px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-50 rounded-md transition-colors flex items-center gap-1 cursor-pointer"
+            className="px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-50 active:scale-95 rounded-md transition-all flex items-center gap-1 cursor-pointer"
           >
             <Trash2 className="w-3.5 h-3.5" />
             <span>Clear Log</span>
@@ -803,7 +705,7 @@ export const RankCheckerPanel: React.FC = () => {
         </div>
       </div>
 
-      {/* Page-1 No-VPN Incognito SERP TFN Highlighter Modal */}
+      {/* Page-1 TFN Highlighter Modal */}
       {activeScanData && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white border border-slate-200 rounded-xl max-w-3xl w-full p-5 shadow-xl flex flex-col max-h-[85vh]">
@@ -811,12 +713,12 @@ export const RankCheckerPanel: React.FC = () => {
               <div>
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="text-sm font-bold text-slate-900">
-                    {activeScanData.regionLabel} · Page 1 Only · {activeScanData.airline}
+                    {activeScanData.regionLabel} · Page 1 · {activeScanData.airline}
                   </h3>
                   {activeScanData.found ? (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-yellow-300 text-slate-950 text-xs font-bold border border-yellow-500">
                       <CheckCircle2 className="w-3.5 h-3.5" />
-                      TFN Highlighted ({activeScanData.matchCount} Match
+                      TFN Found &amp; Highlighted ({activeScanData.matchCount} Match
                       {activeScanData.matchCount === 1 ? '' : 'es'} on Page 1)
                     </span>
                   ) : (
@@ -828,8 +730,7 @@ export const RankCheckerPanel: React.FC = () => {
                 </div>
                 <p className="text-xs text-slate-500 mt-0.5 font-mono">
                   Query: &ldquo;{activeScanData.query}&rdquo; · Targeted TFN:{' '}
-                  <strong className="text-slate-900">{activeScanData.tfn}</strong> · UULE:{' '}
-                  <code>{activeScanData.uule.slice(0, 22)}...</code>
+                  <strong className="text-slate-900">{activeScanData.tfn}</strong>
                 </p>
               </div>
 
@@ -845,28 +746,37 @@ export const RankCheckerPanel: React.FC = () => {
             <div className="fast-scroll-container flex-1 my-3 space-y-2.5 pr-1">
               {activeScanData.results.length === 0 ? (
                 <div className="p-6 text-center text-xs text-slate-500">
-                  No organic snippets returned. Click &ldquo;Open {activePreset.code} Page 1&rdquo; below to view directly in your browser with automatic yellow TFN highlighting.
+                  No snippets returned. Click &ldquo;Open Page 1&rdquo; below to view directly in your browser with automatic yellow TFN highlighting.
                 </div>
               ) : (
                 activeScanData.results.map((item) => (
                   <div
                     key={item.position}
-                    className={`p-3.5 rounded-lg border text-xs space-y-1 ${
+                    className={`p-3.5 rounded-lg border text-xs space-y-1.5 ${
                       item.hasTfn
                         ? 'bg-yellow-50/90 border-yellow-400 ring-2 ring-yellow-300'
                         : 'bg-slate-50/60 border-slate-200'
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="font-mono text-[11px] font-bold text-slate-500">
                         Page 1 · Rank #{item.position}
                       </span>
                       {item.hasTfn && (
-                        <span className="px-2 py-0.5 rounded bg-yellow-300 text-slate-950 font-bold text-[10px]">
-                          TARGETED TFN MATCH ON PAGE 1
-                        </span>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="px-2 py-0.5 rounded bg-yellow-300 text-slate-950 font-bold text-[10px]">
+                            TARGETED TFN FOUND ON PAGE 1
+                          </span>
+                          {item.matchedIn && item.matchedIn.length > 0 && (
+                            <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-900 font-semibold text-[10px]">
+                              Matched in: {item.matchedIn.join(', ')}
+                            </span>
+                          )}
+                        </div>
                       )}
                     </div>
+
+                    {/* Heading (Title) with TFN Highlight */}
                     <a
                       href={`${item.link}${buildTfnTextFragment(activeScanData.tfn)}`}
                       target="_blank"
@@ -875,9 +785,13 @@ export const RankCheckerPanel: React.FC = () => {
                     >
                       {highlightTfnInText(item.title, activeScanData.tfn)}
                     </a>
-                    <div className="text-[11px] font-mono text-emerald-700 truncate">
-                      {item.link}
+
+                    {/* PDF / Site Address (URL) with TFN Highlight */}
+                    <div className="text-[11px] font-mono text-emerald-700 break-all">
+                      {highlightTfnInText(item.link, activeScanData.tfn)}
                     </div>
+
+                    {/* Description (Snippet) with TFN Highlight */}
                     <p className="text-xs text-slate-700 leading-relaxed">
                       {highlightTfnInText(item.snippet, activeScanData.tfn)}
                     </p>
@@ -886,51 +800,29 @@ export const RankCheckerPanel: React.FC = () => {
               )}
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-200">
+            <div className="flex flex-wrap items-center justify-end gap-2 pt-3 border-t border-slate-200">
+              <a
+                href={buildGooglePage1Url(
+                  activeScanData.airline,
+                  searchKeyword,
+                  activeScanData.tfn,
+                  activePreset,
+                  customLocationPlace
+                )}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 active:scale-95 rounded-lg inline-flex items-center gap-1.5 transition-all"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Open {activePreset.code} Page 1</span>
+              </a>
               <button
                 type="button"
-                onClick={() =>
-                  downloadChromeIncognitoLauncher(
-                    buildNoVpnGooglePage1Url(
-                      activeScanData.airline,
-                      searchKeyword,
-                      activeScanData.tfn,
-                      activePreset,
-                      customLocationPlace
-                    ),
-                    activeScanData.airline
-                  )
-                }
-                className="px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
+                onClick={() => setActivePreviewAirline(null)}
+                className="px-3.5 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 active:scale-95 rounded-lg cursor-pointer transition-all"
               >
-                <Download className="w-3.5 h-3.5" />
-                <span>Open in Native Chrome --incognito (.bat)</span>
+                Close
               </button>
-
-              <div className="flex items-center gap-2">
-                <a
-                  href={buildNoVpnGooglePage1Url(
-                    activeScanData.airline,
-                    searchKeyword,
-                    activeScanData.tfn,
-                    activePreset,
-                    customLocationPlace
-                  )}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg inline-flex items-center gap-1.5"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  <span>Open {activePreset.code} Page 1 (Auto-Highlight TFN)</span>
-                </a>
-                <button
-                  type="button"
-                  onClick={() => setActivePreviewAirline(null)}
-                  className="px-3.5 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
-                >
-                  Close
-                </button>
-              </div>
             </div>
           </div>
         </div>
@@ -947,7 +839,7 @@ export const RankCheckerPanel: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setEditingAirline(null)}
-                className="text-slate-400 hover:text-slate-600"
+                className="text-slate-400 hover:text-slate-600 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -965,16 +857,23 @@ export const RankCheckerPanel: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setEditingAirline(null)}
-                className="px-3.5 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-lg"
+                className="px-3.5 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 active:scale-95 rounded-lg cursor-pointer transition-all"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={saveCustomUrl}
-                className="px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg"
+                className="px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 active:scale-95 rounded-lg inline-flex items-center gap-1.5 cursor-pointer transition-all"
               >
-                Save URL
+                {savedUrlFlash ? (
+                  <>
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Saved!</span>
+                  </>
+                ) : (
+                  <span>Save URL</span>
+                )}
               </button>
             </div>
           </div>

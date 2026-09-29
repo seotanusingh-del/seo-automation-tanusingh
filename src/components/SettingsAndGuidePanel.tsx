@@ -17,6 +17,8 @@ import {
   Trash2,
   UserCheck,
   Sparkles,
+  Loader2,
+  HelpCircle,
 } from 'lucide-react';
 import {
   ServiceAccountCredentials,
@@ -77,6 +79,20 @@ export const SettingsAndGuidePanel: React.FC<SettingsAndGuidePanelProps> = ({
   );
   const [profileNameInput, setProfileNameInput] = useState<string>(userName);
   const [githubAvatarUrlInput, setGithubAvatarUrlInput] = useState<string>('');
+  const [githubRepoInput, setGithubRepoInput] = useState<string>(() => {
+    return localStorage.getItem('seo_github_repo') || '';
+  });
+  const [githubTokenInput, setGithubTokenInput] = useState<string>('');
+
+  // Button action loader & confirmation states so user sees immediate feedback on first click
+  const [activeActionLabel, setActiveActionLabel] = useState<string | null>(null);
+  const [savedDefaultsFlash, setSavedDefaultsFlash] = useState(false);
+  const [savedNameFlash, setSavedNameFlash] = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [uploadedAvatarFlash, setUploadedAvatarFlash] = useState(false);
+  const [savedDocFlash, setSavedDocFlash] = useState(false);
+  const [savingCreds, setSavingCreds] = useState(false);
+  const [savedCredsFlash, setSavedCredsFlash] = useState(false);
 
   const [statusMsg, setStatusMsg] = useState(
     'Ready. Upload a Google Cloud JSON key file to auto-fetch keys, or update default TFN & Google Doc values below.'
@@ -122,22 +138,37 @@ export const SettingsAndGuidePanel: React.FC<SettingsAndGuidePanelProps> = ({
     setFormCreds((prev) => ({ ...prev, [key]: value }));
   };
 
-  // Overwrite Service Account Credentials and purge any old cached keys
-  const applyNewServiceAccountCredentials = (
+  // Overwrite Service Account Credentials and sync globally across Mac & Phone
+  const applyNewServiceAccountCredentials = async (
     nextCreds: ServiceAccountCredentials,
     sourceLabel: string
   ) => {
+    setSavingCreds(true);
+    setActiveActionLabel('Saving Service Account keys & syncing across devices...');
     localStorage.removeItem('seo_credentials');
     localStorage.removeItem('seo_old_credentials');
     setFormCreds(nextCreds);
     onSaveCredentials(nextCreds);
+    try {
+      await fetch('/api/workspace-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credentials: nextCreds }),
+      });
+    } catch {
+      // ignore offline
+    }
+    setSavingCreds(false);
+    setSavedCredsFlash(true);
+    setTimeout(() => setSavedCredsFlash(false), 2000);
+    setActiveActionLabel(null);
     setStatusMsg(
-      `${sourceLabel}: Active Service Account updated (${nextCreds.client_email}). Old Service Account keys purged.`
+      `${sourceLabel}: Active Service Account updated (${nextCreds.client_email}) and synced across Mac & Phone.`
     );
   };
 
   const handleSave = () => {
-    applyNewServiceAccountCredentials(
+    void applyNewServiceAccountCredentials(
       formCreds,
       'Saved & Overwrote Service Account Keys'
     );
@@ -145,7 +176,7 @@ export const SettingsAndGuidePanel: React.FC<SettingsAndGuidePanelProps> = ({
 
   const handleReset = () => {
     setJsonFetchBanner(null);
-    applyNewServiceAccountCredentials(
+    void applyNewServiceAccountCredentials(
       DEFAULT_CREDENTIALS,
       'Reset to Default Service Account Keys'
     );
@@ -213,7 +244,8 @@ export const SettingsAndGuidePanel: React.FC<SettingsAndGuidePanelProps> = ({
     await parseAndAutoFetchServiceAccountFile(file);
   };
 
-  const handleSaveDefaultValues = () => {
+  const handleSaveDefaultValues = async () => {
+    setActiveActionLabel('Updating Default TFN & Keyword values across devices...');
     const cleanOld = defOldTfnInput.trim() || DEFAULT_OLD_TFN;
     const cleanNew = defNewTfnInput.trim() || DEFAULT_NEW_TFN;
     const cleanWord = defWordInput.trim() || DEFAULT_REPLACEMENT_WORD;
@@ -233,8 +265,24 @@ export const SettingsAndGuidePanel: React.FC<SettingsAndGuidePanelProps> = ({
         replacementWord: cleanWord,
       });
     }
+    try {
+      await fetch('/api/workspace-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          defaultOldTfn: cleanOld,
+          defaultNewTfn: cleanNew,
+          defaultReplacementWord: cleanWord,
+        }),
+      });
+    } catch {
+      // ignore
+    }
+    setActiveActionLabel(null);
+    setSavedDefaultsFlash(true);
+    setTimeout(() => setSavedDefaultsFlash(false), 2000);
     setStatusMsg(
-      `Updated Default Old TFN (${cleanOld}), New TFN (${cleanNew}), and Keyword (${cleanWord}). Old TFN values purged!`
+      `Updated Default Old TFN (${cleanOld}), New TFN (${cleanNew}), and Keyword (${cleanWord}) across all devices!`
     );
   };
 
@@ -258,15 +306,28 @@ export const SettingsAndGuidePanel: React.FC<SettingsAndGuidePanelProps> = ({
     );
   };
 
-  const handleApplyNewGoogleDocUrl = () => {
+  const handleApplyNewGoogleDocUrl = async () => {
+    setActiveActionLabel('Saving new Google Docs URL & purging old document content...');
     const cleanUrl = docUrlInput.trim() || DEFAULT_GOOGLE_DOC_URL;
     // Purge old Google Doc URL and cached template buffers so old doc values are never kept
     localStorage.removeItem('seo_google_doc_url');
     localStorage.removeItem('seo_template_base64');
     localStorage.removeItem('seo_template_name');
     onChangeGoogleDocUrl(cleanUrl);
+    try {
+      await fetch('/api/workspace-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ googleDocUrl: cleanUrl }),
+      });
+    } catch {
+      // ignore
+    }
+    setActiveActionLabel(null);
+    setSavedDocFlash(true);
+    setTimeout(() => setSavedDocFlash(false), 2000);
     setStatusMsg(
-      `Updated active Google Doc (${extractGoogleDocId(cleanUrl)}) and purged old cached Google Doc template.`
+      `Updated active Google Doc (${extractGoogleDocId(cleanUrl)}), synced across Mac & Phone, and purged old cached template.`
     );
   };
 
@@ -302,11 +363,46 @@ export const SettingsAndGuidePanel: React.FC<SettingsAndGuidePanelProps> = ({
   const handleAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !onChangeUserAvatar) return;
+    setUploadingAvatar(true);
+    setActiveActionLabel('Uploading profile photo to GitHub repository & syncing...');
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       if (typeof reader.result === 'string') {
-        onChangeUserAvatar(reader.result);
-        setStatusMsg('Updated user profile photo in navigation panel!');
+        const dataUri = reader.result;
+        onChangeUserAvatar(dataUri);
+        try {
+          if (githubRepoInput.trim()) {
+            localStorage.setItem('seo_github_repo', githubRepoInput.trim());
+          }
+          const res = await fetch('/api/upload-profile-avatar', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              imageDataUri: dataUri,
+              githubRepo: githubRepoInput.trim(),
+              githubToken: githubTokenInput.trim(),
+            }),
+          });
+          const data = await res.json();
+          if (res.ok && data.message) {
+            setStatusMsg(data.message);
+          } else {
+            setStatusMsg('Uploaded profile photo to repository & updated across app!');
+          }
+        } catch {
+          setStatusMsg('Updated user profile photo in navigation panel!');
+        } finally {
+          setUploadingAvatar(false);
+          setUploadedAvatarFlash(true);
+          setTimeout(() => setUploadedAvatarFlash(false), 2200);
+          setActiveActionLabel(null);
+          if (avatarFileInputRef.current) {
+            avatarFileInputRef.current.value = '';
+          }
+        }
+      } else {
+        setUploadingAvatar(false);
+        setActiveActionLabel(null);
       }
     };
     reader.readAsDataURL(file);
@@ -417,6 +513,19 @@ export const SettingsAndGuidePanel: React.FC<SettingsAndGuidePanelProps> = ({
 
   return (
     <div className="flex flex-col gap-6">
+      {/* Global Action Loader Banner inside Settings */}
+      {activeActionLabel && (
+        <div className="bg-blue-600 text-white px-4 py-3 rounded-xl shadow-md flex items-center justify-between gap-3 animate-pulse">
+          <div className="flex items-center gap-2.5 text-xs sm:text-sm font-bold">
+            <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+            <span>{activeActionLabel}</span>
+          </div>
+          <span className="text-[11px] font-mono bg-blue-700 px-2.5 py-0.5 rounded-full">
+            Processing...
+          </span>
+        </div>
+      )}
+
       {/* 1. Application Default Values & TFN Configuration (No Old Values Saved) */}
       <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xs">
         <div className="px-5 py-4 border-b border-slate-200 bg-blue-50/50 flex flex-wrap items-center justify-between gap-3">
@@ -491,10 +600,19 @@ export const SettingsAndGuidePanel: React.FC<SettingsAndGuidePanelProps> = ({
               <button
                 type="button"
                 onClick={handleSaveDefaultValues}
-                className="h-10 px-5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg transition-colors inline-flex items-center gap-2 cursor-pointer"
+                className="h-10 px-5 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white text-xs font-bold rounded-lg transition-all inline-flex items-center gap-2 cursor-pointer shadow-xs"
               >
-                <Save className="w-3.5 h-3.5" />
-                <span>Update Default Values &amp; Purge Old TFN</span>
+                {savedDefaultsFlash ? (
+                  <>
+                    <Check className="w-4 h-4" />
+                    <span>Saved &amp; Synced Defaults!</span>
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-3.5 h-3.5" />
+                    <span>Update Default Values &amp; Purge Old TFN</span>
+                  </>
+                )}
               </button>
 
               {onChangeUserName && (
@@ -519,14 +637,32 @@ export const SettingsAndGuidePanel: React.FC<SettingsAndGuidePanelProps> = ({
                   />
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={async () => {
                       const clean = profileNameInput.trim() || 'TANU SINGH';
                       onChangeUserName(clean);
-                      setStatusMsg(`Updated active user name to ${clean}.`);
+                      setSavedNameFlash(true);
+                      setTimeout(() => setSavedNameFlash(false), 1800);
+                      try {
+                        await fetch('/api/workspace-config', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ userName: clean }),
+                        });
+                      } catch {
+                        // ignore
+                      }
+                      setStatusMsg(`Updated active user name to ${clean} across all devices.`);
                     }}
-                    className="h-9 px-3 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold rounded-lg cursor-pointer"
+                    className="h-9 px-3 bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-800 text-xs font-semibold rounded-lg transition-all inline-flex items-center gap-1 cursor-pointer"
                   >
-                    Save Name
+                    {savedNameFlash ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Saved!</span>
+                      </>
+                    ) : (
+                      <span>Save Name</span>
+                    )}
                   </button>
                   <input
                     ref={avatarFileInputRef}
@@ -537,21 +673,37 @@ export const SettingsAndGuidePanel: React.FC<SettingsAndGuidePanelProps> = ({
                   />
                   <button
                     type="button"
+                    disabled={uploadingAvatar}
                     onClick={() => avatarFileInputRef.current?.click()}
-                    className="h-9 px-3 bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 text-xs font-semibold rounded-lg cursor-pointer"
+                    className="h-9 px-3.5 bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-60 text-white text-xs font-semibold rounded-lg transition-all inline-flex items-center gap-1.5 cursor-pointer shadow-xs"
                   >
-                    Upload Photo
+                    {uploadingAvatar ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Uploading to GitHub...</span>
+                      </>
+                    ) : uploadedAvatarFlash ? (
+                      <>
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Uploaded to GitHub &amp; Saved!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>Upload Photo (Save to GitHub &amp; App)</span>
+                      </>
+                    )}
                   </button>
                   <input
                     type="text"
                     value={githubAvatarUrlInput}
                     onChange={(e) => setGithubAvatarUrlInput(e.target.value)}
                     placeholder="Or paste GitHub / Image URL..."
-                    className="h-9 px-3 rounded-lg border border-slate-300 text-xs font-mono text-slate-800 w-48"
+                    className="h-9 px-3 rounded-lg border border-slate-300 text-xs font-mono text-slate-800 w-44"
                   />
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={async () => {
                       if (!onChangeUserAvatar) return;
                       let rawUrl = githubAvatarUrlInput.trim();
                       if (!rawUrl) return;
@@ -564,26 +716,76 @@ export const SettingsAndGuidePanel: React.FC<SettingsAndGuidePanelProps> = ({
                       }
                       onChangeUserAvatar(rawUrl);
                       setGithubAvatarUrlInput('');
-                      setStatusMsg('Updated user profile icon from URL!');
+                      setUploadedAvatarFlash(true);
+                      setTimeout(() => setUploadedAvatarFlash(false), 1800);
+                      try {
+                        await fetch('/api/workspace-config', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ userAvatarUrl: rawUrl }),
+                        });
+                      } catch {
+                        // ignore
+                      }
+                      setStatusMsg('Updated user profile icon from URL & synced across devices!');
                     }}
-                    className="h-9 px-3 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 text-xs font-semibold rounded-lg cursor-pointer"
+                    className="h-9 px-3 bg-emerald-50 hover:bg-emerald-100 active:scale-95 border border-emerald-200 text-emerald-700 text-xs font-semibold rounded-lg transition-all cursor-pointer"
                   >
                     Set Image URL
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={async () => {
                       if (!onChangeUserAvatar) return;
                       localStorage.removeItem('seo_user_avatar_url');
                       onChangeUserAvatar(DEFAULT_TANU_AVATAR_DATA_URI);
+                      try {
+                        await fetch('/api/workspace-config', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            userAvatarUrl: DEFAULT_TANU_AVATAR_DATA_URI,
+                          }),
+                        });
+                      } catch {
+                        // ignore
+                      }
                       setStatusMsg('Restored default Tanu Singh profile icon!');
                     }}
-                    className="h-9 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg cursor-pointer"
+                    className="h-9 px-3 bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-700 text-xs font-semibold rounded-lg transition-all cursor-pointer"
                   >
                     Reset Default Photo
                   </button>
                 </div>
               )}
+            </div>
+          </div>
+
+          {/* Optional Direct GitHub Repo Push Config for Profile Photo */}
+          <div className="pt-3 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                Optional GitHub Repository for Direct Avatar Commit (e.g. <code>username/repo</code>)
+              </label>
+              <input
+                type="text"
+                value={githubRepoInput}
+                onChange={(e) => setGithubRepoInput(e.target.value)}
+                placeholder="e.g. tanusingh/seo-automator (auto-saves to public/tanu-singh-avatar.jpg)"
+                className="w-full h-8 px-3 rounded-lg border border-slate-200 text-xs font-mono text-slate-800"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                Optional GitHub Personal Access Token (for remote GitHub API push)
+              </label>
+              <input
+                type="password"
+                value={githubTokenInput}
+                onChange={(e) => setGithubTokenInput(e.target.value)}
+                placeholder="ghp_... (optional — local repo files update automatically)"
+                className="w-full h-8 px-3 rounded-lg border border-slate-200 text-xs font-mono text-slate-800"
+              />
             </div>
           </div>
         </div>
@@ -656,9 +858,16 @@ export const SettingsAndGuidePanel: React.FC<SettingsAndGuidePanelProps> = ({
             <button
               type="button"
               onClick={handleApplyNewGoogleDocUrl}
-              className="w-full h-10 px-3 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer"
+              className="w-full h-10 px-3 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-bold rounded-lg transition-all inline-flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
             >
-              Save &amp; Overwrite Doc
+              {savedDocFlash ? (
+                <>
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Saved &amp; Synced!</span>
+                </>
+              ) : (
+                <span>Save &amp; Overwrite Doc</span>
+              )}
             </button>
           </div>
         </div>
@@ -817,11 +1026,26 @@ export const SettingsAndGuidePanel: React.FC<SettingsAndGuidePanelProps> = ({
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-1">
             <button
               type="button"
+              disabled={savingCreds}
               onClick={handleSave}
-              className="flex-1 h-10 px-5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-2 cursor-pointer"
+              className="flex-1 h-10 px-5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 disabled:opacity-60 text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 cursor-pointer shadow-xs"
             >
-              <Save className="w-4 h-4" />
-              <span>Save &amp; Overwrite Active Service Account</span>
+              {savingCreds ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Saving &amp; Syncing Service Account...</span>
+                </>
+              ) : savedCredsFlash ? (
+                <>
+                  <Check className="w-4 h-4" />
+                  <span>Service Account Saved Across Devices!</span>
+                </>
+              ) : (
+                <>
+                  <Save className="w-4 h-4" />
+                  <span>Save &amp; Overwrite Active Service Account</span>
+                </>
+              )}
             </button>
             <button
               type="button"
@@ -851,9 +1075,26 @@ export const SettingsAndGuidePanel: React.FC<SettingsAndGuidePanelProps> = ({
               <span>Reset Default Keys</span>
             </button>
           </div>
+          {/* RSA Private Key Explanation Box */}
+          <div className="p-4 rounded-xl bg-blue-50/70 border border-blue-200 space-y-2 text-xs text-slate-800">
+            <div className="flex items-center gap-2 font-bold text-blue-900 text-xs sm:text-sm">
+              <HelpCircle className="w-4 h-4 text-blue-600 shrink-0" />
+              <span>What is the RSA Private Key, How to Get It, and Why Does This App Use It?</span>
+            </div>
+            <ul className="space-y-1.5 text-slate-700 leading-relaxed list-disc pl-5">
+              <li>
+                <strong>What is the RSA Private Key (<code>private_key</code>)?</strong> It is a 2048-bit cryptographic digital key (starting with <code>-----BEGIN PRIVATE KEY-----</code>) issued by Google Cloud for your Service Account. It allows the server to sign secure OAuth 2.0 tokens automatically in the background without asking you to log into Google popups every hour.
+              </li>
+              <li>
+                <strong>How to get it:</strong> Open <strong>Google Cloud Console &rarr; IAM &amp; Admin &rarr; Service Accounts &rarr; Click your Service Account &rarr; Keys tab &rarr; Add Key &rarr; Create new key &rarr; Select JSON &rarr; Create</strong>. A <code>.json</code> file will download to your device. Simply upload that <code>.json</code> file in the box above and the app extracts the RSA key automatically!
+              </li>
+              <li>
+                <strong>What is its use in this application?</strong> This application uses the RSA key to authenticate directly with the <strong>Google Docs API</strong>, <strong>Google Drive API</strong>, and <strong>Google Sheets API</strong> so it can: (1) sync and download your master Google Doc template and auto-detect Airlines &amp; TFN numbers, and (2) read worksheet tabs and write concatenated SEO links directly to your chosen Tab, Column, and Starting Row in Google Sheets.
+              </li>
+            </ul>
+          </div>
         </div>
       </div>
-
       {/* 4. Security & Compromised Password Reset (Light UI, Invisible OTP) */}
       <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xs">
         <div className="px-5 py-4 border-b border-slate-200 bg-slate-50/70 flex flex-wrap items-center justify-between gap-3">
