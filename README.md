@@ -16,7 +16,7 @@
 - **Bottom Floating Install App Popup**: Displays a floating bottom popup card on the login screen (*"Install SEO AUTOMATOR for faster access."*) with an **Install App** button and dismiss (`X`) button, backed by a full Progressive Web App (PWA) manifest and service worker.
 - **Developer Contact Links**:
   - **LinkedIn**: [https://www.linkedin.com/in/shashankrajputx/](https://www.linkedin.com/in/shashankrajputx/)
-  - **Gmail**: [mailto:aws.shashanksingh@gmail.com](mailto:aws.shashanksingh@gmail.com)
+  - **Gmail**: [aws.shashanksingh@gmail.com](mailto:aws.shashanksingh@gmail.com)
   - **Instagram**: [https://www.instagram.com/shashankrajput.__/](https://www.instagram.com/shashankrajput.__/)
 
 ---
