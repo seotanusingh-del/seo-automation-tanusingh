@@ -249,8 +249,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               <Linkedin className="w-4 h-4" />
             </a>
             <a
-              href="mailto:aws.shashanksingh@gmail.com"
-              title="Email — aws.shashanksingh@gmail.com"
+              href="https://mail.google.com/mail/?view=cm&fs=1&to=aws.shashanksingh@gmail.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Send Gmail to aws.shashanksingh@gmail.com"
               className="w-9 h-9 rounded-xl bg-slate-50 hover:bg-red-50 border border-slate-200 hover:border-red-200 text-slate-600 hover:text-red-600 flex items-center justify-center transition-colors"
             >
               <Mail className="w-4 h-4" />
