@@ -21,17 +21,20 @@ import {
   X,
   FolderArchive,
   CheckCircle2,
-  Info,
+  LogOut,
 } from 'lucide-react';
 import {
   DEFAULT_OLD_TFN,
   DEFAULT_NEW_TFN,
   DEFAULT_REPLACEMENT_WORD,
   DEFAULT_AIRLINES,
+  DEFAULT_GOOGLE_DOC_URL,
   AVAILABLE_LANGUAGES,
   DEFAULT_CREDENTIALS,
   LIBREOFFICE_WEBSITE_URL,
   ServiceAccountCredentials,
+  buildGoogleDocUrl,
+  extractGoogleDocId,
   buildOutputName,
   generateSequenceName,
   extractTextFromDocxBuffer,
@@ -39,12 +42,16 @@ import {
   findMatchingAirlinesInText,
   processDocxTemplateBuffer,
   createDocxFromWhiteboard,
-  buildLibreOfficeBatchScripts,
 } from './lib/seoHelpers';
+import {
+  convertDocxBytesToPdfBytes,
+  createPdfFromWhiteboard,
+} from './lib/pdfEngine';
 import { LinkConcatenatorPanel } from './components/LinkConcatenatorPanel';
 import { AirlineContentGeneratorPanel } from './components/AirlineContentGeneratorPanel';
 import { RankCheckerPanel } from './components/RankCheckerPanel';
 import { SettingsAndGuidePanel } from './components/SettingsAndGuidePanel';
+import { LoginScreen } from './components/LoginScreen';
 
 type TopTab = 'home' | 'concat' | 'airline-content' | 'rank' | 'settings';
 type HomeMode = 'attach' | 'whiteboard';
@@ -53,17 +60,7 @@ interface GeneratedFileItem {
   name: string;
   airline: string;
   docxBytes: Uint8Array;
-  pdfBase64?: string;
-}
-
-function uint8ArrayToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  const chunkSize = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    const chunk = bytes.subarray(i, i + chunkSize);
-    binary += String.fromCharCode.apply(null, Array.from(chunk));
-  }
-  return btoa(binary);
+  pdfBytes: Uint8Array;
 }
 
 function base64ToUint8Array(base64: string): Uint8Array {
@@ -77,6 +74,12 @@ function base64ToUint8Array(base64: string): Uint8Array {
 }
 
 export default function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    return (
+      localStorage.getItem('seo_studio_auth_session') ===
+      'authenticated_8081368879'
+    );
+  });
   const [activeTab, setActiveTab] = useState<TopTab>('home');
   const [homeMode, setHomeMode] = useState<HomeMode>('attach');
 
@@ -114,6 +117,12 @@ export default function App() {
   // Output Options
   const [generatePdf, setGeneratePdf] = useState(true);
   const [generateZip, setGenerateZip] = useState(true);
+  const [includeDocxInZip, setIncludeDocxInZip] = useState(false);
+
+  // Google Docs Link State (persisted to localStorage, editable anytime)
+  const [googleDocUrl, setGoogleDocUrl] = useState<string>(() => {
+    return localStorage.getItem('seo_google_doc_url') ?? DEFAULT_GOOGLE_DOC_URL;
+  });
 
   // Template Attachment State
   const [templateName, setTemplateName] = useState<string | null>(null);
@@ -187,6 +196,10 @@ export default function App() {
     localStorage.setItem('seo_airlines', JSON.stringify(airlines));
   }, [airlines]);
 
+  useEffect(() => {
+    localStorage.setItem('seo_google_doc_url', googleDocUrl);
+  }, [googleDocUrl]);
+
   const checkServerStatus = async () => {
     const baseUrl = localBridgeUrl.trim().replace(/\/$/, '');
     try {
@@ -259,14 +272,16 @@ export default function App() {
   };
 
   const handleSyncGoogleDoc = async () => {
+    const cleanDocId = extractGoogleDocId(googleDocUrl);
     setIsSyncingDoc(true);
-    setStatusMessage('Syncing Google Doc... Please wait.');
+    setStatusMessage(`Syncing Google Doc (${cleanDocId})... Please wait.`);
     try {
       const res = await fetch('/api/sync-google-doc', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           credentials,
+          docId: cleanDocId,
           airlines,
         }),
       });
@@ -283,6 +298,10 @@ export default function App() {
       }
       if (Array.isArray(data.uniqueTfns) && data.uniqueTfns.length > 0) {
         setOldTfn(data.uniqueTfns.join(', '));
+      }
+
+      if (data.fullText) {
+        setWhiteboardText(data.fullText);
       }
 
       if (data.docxBase64) {
@@ -306,7 +325,7 @@ export default function App() {
       }
 
       setStatusMessage(
-        `Sync complete: ${data.foundAirlines?.length || 0} airline(s), ${
+        `Sync complete (${cleanDocId}): ${data.foundAirlines?.length || 0} airline(s), ${
           data.uniqueTfns?.length || 0
         } TFN(s) found.`
       );
@@ -351,7 +370,7 @@ export default function App() {
 
     setIsGenerating(true);
     setStatusMessage(
-      `Generating documents for ${activeSelectedAirlines.length} airline(s)...`
+      `Generating web-native PDFs for ${activeSelectedAirlines.length} airline(s)...`
     );
 
     try {
@@ -360,8 +379,16 @@ export default function App() {
       for (const airline of activeSelectedAirlines) {
         const outName = buildOutputName(airline);
         let docxBytes: Uint8Array;
+        let pdfBytes: Uint8Array;
 
         if (useWhiteboard) {
+          const wbStyle = {
+            fontFamily: wbFontFamily,
+            fontSize: wbFontSize,
+            bold: wbBold,
+            italic: wbItalic,
+            underline: wbUnderline,
+          };
           docxBytes = await createDocxFromWhiteboard(
             whiteboardText,
             airline,
@@ -370,13 +397,17 @@ export default function App() {
             replacementWord.trim() || DEFAULT_REPLACEMENT_WORD,
             airlines,
             detectedAirlines,
-            {
-              fontFamily: wbFontFamily,
-              fontSize: wbFontSize,
-              bold: wbBold,
-              italic: wbItalic,
-              underline: wbUnderline,
-            }
+            wbStyle
+          );
+          pdfBytes = createPdfFromWhiteboard(
+            whiteboardText,
+            airline,
+            oldTfn.trim(),
+            newTfn.trim(),
+            replacementWord.trim() || DEFAULT_REPLACEMENT_WORD,
+            airlines,
+            detectedAirlines,
+            wbStyle
           );
         } else {
           docxBytes = await processDocxTemplateBuffer(
@@ -388,51 +419,15 @@ export default function App() {
             airlines,
             detectedAirlines
           );
+          pdfBytes = await convertDocxBytesToPdfBytes(docxBytes);
         }
 
         builtItems.push({
           name: outName,
           airline,
           docxBytes,
+          pdfBytes,
         });
-      }
-
-      // Attempt server-side or local-bridge LibreOffice PDF conversion
-      const baseUrl = localBridgeUrl.trim().replace(/\/$/, '');
-      let pdfConvertedCount = 0;
-      try {
-        const response = await fetch(`${baseUrl}/api/convert-pdf`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            customLibreOfficePath: libreOfficePath,
-            files: builtItems.map((item) => ({
-              name: item.name,
-              docxBase64: uint8ArrayToBase64(item.docxBytes),
-            })),
-          }),
-        });
-
-        if (response.ok) {
-          const result = await response.json();
-          if (result.converted && Array.isArray(result.files)) {
-            const pdfMap = new Map<string, string>();
-            for (const f of result.files) {
-              if (f.pdfBase64) {
-                pdfMap.set(f.name, f.pdfBase64);
-                pdfConvertedCount += 1;
-              }
-            }
-            for (const item of builtItems) {
-              const pdfB64 = pdfMap.get(item.name);
-              if (pdfB64) {
-                item.pdfBase64 = pdfB64;
-              }
-            }
-          }
-        }
-      } catch {
-        // Fallback to bundling DOCX + 1-click LibreOffice batch converter
       }
 
       const now = new Date();
@@ -446,17 +441,13 @@ export default function App() {
 
       if (generateZip) {
         await downloadOutputZip(builtItems, folderName);
+      } else if (builtItems.length === 1) {
+        downloadSingleFile(builtItems[0], 'pdf');
       }
 
-      if (pdfConvertedCount > 0) {
-        setStatusMessage(
-          `Completed! Converted ${pdfConvertedCount} PDF(s) via LibreOffice in ${folderName}.`
-        );
-      } else {
-        setStatusMessage(
-          `Completed! Generated ${builtItems.length} airline document(s) in ${folderName} with 1-click LibreOffice PDF batch converter.`
-        );
-      }
+      setStatusMessage(
+        `Completed! Generated ${builtItems.length} ready-to-use PDF document(s) in ${folderName}.`
+      );
     } catch (err: unknown) {
       setStatusMessage(
         `Generation Failed: ${err instanceof Error ? err.message : String(err)}`
@@ -477,23 +468,14 @@ export default function App() {
 
     const zip = new JSZip();
     const root = zip.folder(batchFolder)!;
-    const docxFolder = root.folder('docx')!;
-    const pdfFolder = root.folder('pdfs')!;
 
     for (const item of items) {
-      docxFolder.file(`${item.name}.docx`, item.docxBytes);
-      if (item.pdfBase64) {
-        pdfFolder.file(`${item.name}.pdf`, base64ToUint8Array(item.pdfBase64));
+      // Place ready-to-use PDFs directly inside the batch folder (matching SEOAUTOMATION3.py)
+      root.file(`${item.name}.pdf`, item.pdfBytes);
+      if (includeDocxInZip) {
+        root.folder('docx')!.file(`${item.name}.docx`, item.docxBytes);
       }
     }
-
-    // Always include the 1-click LibreOffice batch scripts for local conversion
-    const scripts = buildLibreOfficeBatchScripts();
-    root.file('convert_to_pdf_mac_linux.sh', scripts.macLinuxSh, {
-      unixPermissions: '755',
-    });
-    root.file('convert_to_pdf_windows.bat', scripts.windowsBat);
-    root.file('README_LIBREOFFICE.txt', scripts.readmeTxt);
 
     const blob = await zip.generateAsync({ type: 'blob' });
     const url = URL.createObjectURL(blob);
@@ -504,10 +486,14 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  const downloadSingleFile = (item: GeneratedFileItem) => {
-    if (item.pdfBase64) {
-      const bytes = base64ToUint8Array(item.pdfBase64);
-      const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' });
+  const downloadSingleFile = (
+    item: GeneratedFileItem,
+    format: 'pdf' | 'docx' = 'pdf'
+  ) => {
+    if (format === 'pdf') {
+      const blob = new Blob([item.pdfBytes.buffer as ArrayBuffer], {
+        type: 'application/pdf',
+      });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -583,6 +569,15 @@ export default function App() {
     setWhiteboardText(updated);
   };
 
+  const handleLogout = () => {
+    localStorage.removeItem('seo_studio_auth_session');
+    setIsAuthenticated(false);
+  };
+
+  if (!isAuthenticated) {
+    return <LoginScreen onAuthenticated={() => setIsAuthenticated(true)} />;
+  }
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900">
       {/* 3-Zone Top Bar Contract */}
@@ -654,21 +649,12 @@ export default function App() {
                 : 'border-transparent text-slate-600 hover:text-slate-900'
             }`}
           >
-            Settings &amp; Setup Guide
+            Settings
           </button>
         </nav>
 
         {/* Zone 3: 1-2 Primary Actions */}
-        <div className="hidden md:flex items-center gap-2.5 shrink-0">
-          <a
-            href={LIBREOFFICE_WEBSITE_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
-          >
-            <span>Get LibreOffice</span>
-            <ExternalLink className="w-3.5 h-3.5" />
-          </a>
+        <div className="flex items-center gap-2.5 shrink-0">
           <button
             type="button"
             onClick={() => {
@@ -676,10 +662,19 @@ export default function App() {
               runGeneration(homeMode === 'whiteboard');
             }}
             disabled={isGenerating}
-            className="px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg transition-colors inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+            className="hidden sm:inline-flex px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg transition-colors items-center gap-1.5 whitespace-nowrap cursor-pointer"
           >
             <Zap className="w-3.5 h-3.5" />
             <span>{isGenerating ? 'Generating...' : 'Generate Document'}</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+            title="Sign out"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Logout</span>
           </button>
         </div>
       </header>
@@ -818,6 +813,61 @@ export default function App() {
                 {/* Right Column: Output Options + Language + Quick Actions */}
                 <div className="lg:col-span-5 flex flex-col justify-between space-y-5 lg:border-l lg:border-slate-200 lg:pl-6">
                   <div className="space-y-4">
+                    {/* Google Docs Link Bar (Editable Anytime) */}
+                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="text-xs font-bold text-slate-800">
+                          Google Docs Link (Editable Anytime)
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <a
+                            href={buildGoogleDocUrl(googleDocUrl)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 inline-flex items-center gap-1"
+                            title="Open Google Doc in a new tab to edit content"
+                          >
+                            <span>Open &amp; Edit Doc</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                          {googleDocUrl !== DEFAULT_GOOGLE_DOC_URL && (
+                            <button
+                              type="button"
+                              onClick={() => setGoogleDocUrl(DEFAULT_GOOGLE_DOC_URL)}
+                              className="text-[11px] font-medium text-slate-500 hover:text-slate-800 cursor-pointer"
+                            >
+                              Reset
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={googleDocUrl}
+                          onChange={(e) => setGoogleDocUrl(e.target.value)}
+                          placeholder="Paste any Google Docs link or Document ID..."
+                          className="flex-1 h-9 px-3 rounded-lg border border-slate-300 bg-white text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                        />
+                        <button
+                          type="button"
+                          disabled={isSyncingDoc}
+                          onClick={handleSyncGoogleDoc}
+                          className="h-9 px-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 shrink-0 cursor-pointer"
+                        >
+                          <RefreshCw
+                            className={`w-3.5 h-3.5 ${
+                              isSyncingDoc ? 'animate-spin' : ''
+                            }`}
+                          />
+                          <span>{isSyncingDoc ? 'Syncing' : 'Sync'}</span>
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-slate-500">
+                        Active ID: <code className="font-mono text-slate-700">{extractGoogleDocId(googleDocUrl)}</code>
+                      </p>
+                    </div>
+
                     <div>
                       <h2 className="text-xs font-bold text-slate-800 mb-2.5">
                         Output Options
@@ -830,7 +880,7 @@ export default function App() {
                             onChange={(e) => setGeneratePdf(e.target.checked)}
                             className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                           />
-                          <span>Generate PDF (via LibreOffice Engine)</span>
+                          <span>Generate PDF (Built-in Web PDF Engine — No External App Needed)</span>
                         </label>
                         <label className="flex items-center gap-2.5 text-xs font-medium text-slate-700 cursor-pointer">
                           <input
@@ -840,6 +890,15 @@ export default function App() {
                             className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                           />
                           <span>Compress Outputs to ZIP Automatically</span>
+                        </label>
+                        <label className="flex items-center gap-2.5 text-xs font-medium text-slate-700 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={includeDocxInZip}
+                            onChange={(e) => setIncludeDocxInZip(e.target.checked)}
+                            className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span>Also Include .DOCX Files Inside ZIP</span>
                         </label>
                       </div>
                     </div>
@@ -937,28 +996,23 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* LibreOffice Quick Status & Download Link */}
-                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg flex items-center justify-between gap-2 text-xs">
+                  {/* Web PDF Engine Status & Optional LibreOffice Link */}
+                  <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-lg flex items-center justify-between gap-2 text-xs">
                     <div className="min-w-0">
-                      <span className="font-semibold text-slate-800 block truncate">
-                        External PDF Engine: LibreOffice
+                      <span className="font-semibold text-emerald-900 flex items-center gap-1.5 truncate">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <span>Web PDF Engine Active (No LibreOffice Needed)</span>
                       </span>
-                      <a
-                        href={LIBREOFFICE_WEBSITE_URL}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 hover:underline inline-flex items-center gap-1 text-[11px]"
-                      >
-                        <span>https://www.libreoffice.org/</span>
-                        <ExternalLink className="w-3 h-3" />
-                      </a>
+                      <span className="text-emerald-700 text-[11px] block truncate">
+                        Generates direct searchable .pdf files in browser &amp; Vercel
+                      </span>
                     </div>
                     <button
                       type="button"
                       onClick={() => setActiveTab('settings')}
-                      className="px-2.5 py-1.5 bg-white border border-slate-300 hover:bg-slate-100 rounded-md text-slate-700 font-medium whitespace-nowrap shrink-0 cursor-pointer"
+                      className="px-2.5 py-1.5 bg-white border border-emerald-300 hover:bg-emerald-50 rounded-md text-emerald-800 font-medium whitespace-nowrap shrink-0 cursor-pointer"
                     >
-                      Setup Guide
+                      Settings
                     </button>
                   </div>
                 </div>
@@ -1198,25 +1252,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {!generatedFiles[0]?.pdfBase64 && (
-                  <div className="px-5 py-2.5 bg-amber-50/80 border-b border-amber-200 text-xs text-amber-900 flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <Info className="w-4 h-4 text-amber-700 shrink-0" />
-                      <span>
-                        Cloud Mode: Your ZIP archive includes all customized <code>.docx</code> files plus 1-click LibreOffice batch converters (<code>convert_to_pdf_windows.bat</code> &amp; <code>convert_to_pdf_mac_linux.sh</code>). Need LibreOffice?
-                      </span>
-                    </div>
-                    <a
-                      href={LIBREOFFICE_WEBSITE_URL}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="font-semibold text-blue-700 underline whitespace-nowrap"
-                    >
-                      Download from libreoffice.org
-                    </a>
-                  </div>
-                )}
-
                 <div className="fast-scroll-container max-h-72 divide-y divide-slate-100 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-px bg-slate-100">
                   {generatedFiles.map((file) => (
                     <div
@@ -1228,17 +1263,27 @@ export default function App() {
                           {file.airline}
                         </span>
                         <span className="text-[11px] font-mono text-slate-500 block truncate">
-                          {file.name}.{file.pdfBase64 ? 'pdf' : 'docx'}
+                          {file.name}.pdf
                         </span>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => downloadSingleFile(file)}
-                        className="px-2.5 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-md transition-colors flex items-center gap-1 shrink-0 cursor-pointer"
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                        <span>{file.pdfBase64 ? 'PDF' : 'DOCX'}</span>
-                      </button>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => downloadSingleFile(file, 'pdf')}
+                          className="px-2.5 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors flex items-center gap-1 cursor-pointer"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>PDF</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => downloadSingleFile(file, 'docx')}
+                          className="px-2 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors cursor-pointer"
+                          title="Download DOCX version"
+                        >
+                          DOCX
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1265,18 +1310,8 @@ export default function App() {
               setCredentials(creds);
               localStorage.setItem('seo_credentials', JSON.stringify(creds));
             }}
-            libreOfficePath={libreOfficePath}
-            onChangeLibreOfficePath={(p) => {
-              setLibreOfficePath(p);
-              localStorage.setItem('seo_libreoffice_path', p);
-            }}
-            localBridgeUrl={localBridgeUrl}
-            onChangeLocalBridgeUrl={(u) => {
-              setLocalBridgeUrl(u);
-              localStorage.setItem('seo_local_bridge_url', u);
-            }}
-            serverStatus={serverStatus}
-            onRefreshServerStatus={checkServerStatus}
+            googleDocUrl={googleDocUrl}
+            onChangeGoogleDocUrl={setGoogleDocUrl}
           />
         )}
       </main>

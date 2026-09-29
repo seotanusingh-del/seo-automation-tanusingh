@@ -5,9 +5,32 @@ export const DEFAULT_NEW_TFN = '+1-888-548-7012';
 export const DEFAULT_REPLACEMENT_WORD = 'Qatar';
 
 export const GOOGLE_DOC_ID = '1wWLgilVoc0AabtNoDcmEHzYv2K4VjvHb7qfycs-ZCTU';
+export const DEFAULT_GOOGLE_DOC_URL = `https://docs.google.com/document/d/${GOOGLE_DOC_ID}/edit`;
 export const GOOGLE_SHEET_ID = '1E4gyzCpwb4eIwUubY6CiKkl9CjO49kw327D8bUfj5Fg';
 export const LIBREOFFICE_WEBSITE_URL = 'https://www.libreoffice.org/';
 export const LIBREOFFICE_DOWNLOAD_URL = 'https://www.libreoffice.org/download/';
+
+/**
+ * Extracts a clean Google Doc ID from either a full Google Docs URL or a raw ID string.
+ */
+export function extractGoogleDocId(input: string): string {
+  const trimmed = (input || '').trim();
+  if (!trimmed) return GOOGLE_DOC_ID;
+  const docMatch = trimmed.match(/\/document\/d\/([a-zA-Z0-9_-]+)/);
+  if (docMatch && docMatch[1]) return docMatch[1];
+  const fileMatch = trimmed.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (fileMatch && fileMatch[1]) return fileMatch[1];
+  const idParamMatch = trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (idParamMatch && idParamMatch[1]) return idParamMatch[1];
+  // If user pasted just the raw ID
+  const cleanId = trimmed.split(/[/?#&]/)[0].trim();
+  return cleanId || GOOGLE_DOC_ID;
+}
+
+export function buildGoogleDocUrl(input: string): string {
+  const docId = extractGoogleDocId(input);
+  return `https://docs.google.com/document/d/${docId}/edit`;
+}
 
 export const AVAILABLE_LANGUAGES = [
   'English', 'Spanish', 'French', 'German', 'Italian', 'Portuguese',
@@ -374,37 +397,73 @@ export async function processDocxTemplateBuffer(
     if (!file) continue;
     const xml = await file.async('string');
 
-    // Replace paragraph by paragraph so tokens split across multiple <w:t> runs are still matched!
+    // Replace paragraph by paragraph: first try run-by-run to preserve inline styles,
+    // and if a token was split across runs, fallback to paragraph-level replacement.
     const updatedXml = xml.replace(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g, (paraXml) => {
       const tMatches = Array.from(paraXml.matchAll(/<w:t(?:\s+[^>]*)?>([\s\S]*?)<\/w:t>/g));
       if (tMatches.length === 0) return paraXml;
 
-      const combinedText = tMatches.map((m) => unescapeXml(m[1])).join('');
-      let replacedText = replaceTfnInString(combinedText, oldTfn, newTfn);
-      replacedText = replaceAirlineInString(
-        replacedText,
+      const combinedOriginal = tMatches.map((m) => unescapeXml(m[1])).join('');
+      let targetCombined = replaceTfnInString(combinedOriginal, oldTfn, newTfn);
+      targetCombined = replaceAirlineInString(
+        targetCombined,
         airline,
         replacementWord,
         allKnownAirlines,
         detectedAirlines
       );
 
-      if (replacedText === combinedText) {
+      if (targetCombined === combinedOriginal) {
         return paraXml;
       }
 
-      // Put the full replaced text into the first <w:t> and empty subsequent <w:t> in the paragraph
+      // Try run-by-run replacement first so individual <w:r> bold/color/links stay intact
+      const runReplacedPieces: string[] = [];
+      const runUpdatedXml = paraXml.replace(
+        /<w:t(\s+[^>]*)?>([\s\S]*?)<\/w:t>/g,
+        (_full, attrs, inner) => {
+          const rawRunText = unescapeXml(inner);
+          let repRun = replaceTfnInString(rawRunText, oldTfn, newTfn);
+          repRun = replaceAirlineInString(
+            repRun,
+            airline,
+            replacementWord,
+            allKnownAirlines,
+            detectedAirlines
+          );
+          runReplacedPieces.push(repRun);
+          return `<w:t xml:space="preserve">${escapeXml(repRun)}</w:t>`;
+        }
+      );
+
+      if (runReplacedPieces.join('') === targetCombined) {
+        return runUpdatedXml;
+      }
+
+      // Fallback when Word split a phone number or airline name across multiple <w:t> runs
       let first = true;
       return paraXml.replace(/<w:t(\s+[^>]*)?>([\s\S]*?)<\/w:t>/g, (_full, attrs) => {
         if (first) {
           first = false;
-          return `<w:t xml:space="preserve">${escapeXml(replacedText)}</w:t>`;
+          return `<w:t xml:space="preserve">${escapeXml(targetCombined)}</w:t>`;
         }
         return `<w:t${attrs || ''}></w:t>`;
       });
     });
 
     zip.file(fileName, updatedXml);
+  }
+
+  // Also update any tel: hyperlinks inside word/_rels/document.xml.rels
+  const relsFile = zip.file('word/_rels/document.xml.rels');
+  if (relsFile && newTfn) {
+    const relsXml = await relsFile.async('string');
+    const cleanNewTel = newTfn.replace(/[^\d+]/g, '');
+    const updatedRels = relsXml.replace(
+      /Target="tel:[^"]*"/gi,
+      `Target="tel:${escapeXml(cleanNewTel)}"`
+    );
+    zip.file('word/_rels/document.xml.rels', updatedRels);
   }
 
   return zip.generateAsync({ type: 'uint8array' });
