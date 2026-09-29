@@ -22,6 +22,21 @@ import {
   FolderArchive,
   CheckCircle2,
   LogOut,
+  Menu,
+  Home,
+  Link2,
+  Sparkles,
+  Globe,
+  Settings,
+  ShieldCheck,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Share2,
+  RotateCcw,
+  Send,
+  Mail,
+  Copy,
+  Check,
 } from 'lucide-react';
 import {
   DEFAULT_OLD_TFN,
@@ -51,9 +66,16 @@ import { LinkConcatenatorPanel } from './components/LinkConcatenatorPanel';
 import { AirlineContentGeneratorPanel } from './components/AirlineContentGeneratorPanel';
 import { RankCheckerPanel } from './components/RankCheckerPanel';
 import { SettingsAndGuidePanel } from './components/SettingsAndGuidePanel';
+import { SeoBulkAutomationPanel } from './components/SeoBulkAutomationPanel';
 import { LoginScreen } from './components/LoginScreen';
 
-type TopTab = 'home' | 'concat' | 'airline-content' | 'rank' | 'settings';
+type TopTab =
+  | 'home'
+  | 'concat'
+  | 'airline-content'
+  | 'rank'
+  | 'seo-automation'
+  | 'settings';
 type HomeMode = 'attach' | 'whiteboard';
 
 interface GeneratedFileItem {
@@ -73,25 +95,89 @@ function base64ToUint8Array(base64: string): Uint8Array {
   return bytes;
 }
 
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
 export default function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    return (
-      localStorage.getItem('seo_studio_auth_session') ===
-      'authenticated_8081368879'
+  // Always start unauthenticated on tab open, refresh, or re-open so the session is immediately locked
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [hasSavedWorkspace] = useState<boolean>(() => {
+    return Boolean(
+      localStorage.getItem('seo_last_active_tab') ||
+        localStorage.getItem('seo_whiteboard_text') ||
+        localStorage.getItem('seo_template_name')
     );
   });
-  const [activeTab, setActiveTab] = useState<TopTab>('home');
-  const [homeMode, setHomeMode] = useState<HomeMode>('attach');
+
+  const [activeTab, setActiveTab] = useState<TopTab>(() => {
+    const saved = localStorage.getItem('seo_last_active_tab') as TopTab | null;
+    return saved || 'home';
+  });
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
+  const [homeMode, setHomeMode] = useState<HomeMode>(() => {
+    const saved = localStorage.getItem('seo_last_home_mode') as HomeMode | null;
+    return saved || 'attach';
+  });
+
+  // User Profile & Configurable Application Default Values (Overwrite Mode)
+  const [userName, setUserName] = useState<string>(() => {
+    return localStorage.getItem('seo_user_display_name') || 'TANU SINGH';
+  });
+  const [userAvatarUrl, setUserAvatarUrl] = useState<string>(() => {
+    return (
+      localStorage.getItem('seo_user_avatar_url') ||
+      '/src/assets/images/tanu_singh_avatar_1790678043096.jpg'
+    );
+  });
+  const [defaultOldTfn, setDefaultOldTfn] = useState<string>(() => {
+    return localStorage.getItem('seo_default_old_tfn') || DEFAULT_OLD_TFN;
+  });
+  const [defaultNewTfn, setDefaultNewTfn] = useState<string>(() => {
+    return localStorage.getItem('seo_default_new_tfn') || DEFAULT_NEW_TFN;
+  });
+  const [defaultReplacementWord, setDefaultReplacementWord] = useState<string>(
+    () => {
+      return (
+        localStorage.getItem('seo_default_replacement_word') ||
+        DEFAULT_REPLACEMENT_WORD
+      );
+    }
+  );
+
+  // Share to 3rd-Party Apps Modal State
+  const [shareModalTarget, setShareModalTarget] = useState<{
+    fileName: string;
+    airlineLabel: string;
+    fileCount: number;
+  } | null>(null);
+  const [copiedShareText, setCopiedShareText] = useState(false);
 
   // Shared Config State (persisted to localStorage)
   const [oldTfn, setOldTfn] = useState<string>(() => {
-    return localStorage.getItem('seo_old_tfn') ?? DEFAULT_OLD_TFN;
+    return (
+      localStorage.getItem('seo_old_tfn') ??
+      (localStorage.getItem('seo_default_old_tfn') || DEFAULT_OLD_TFN)
+    );
   });
   const [newTfn, setNewTfn] = useState<string>(() => {
-    return localStorage.getItem('seo_new_tfn') ?? DEFAULT_NEW_TFN;
+    return (
+      localStorage.getItem('seo_new_tfn') ??
+      (localStorage.getItem('seo_default_new_tfn') || DEFAULT_NEW_TFN)
+    );
   });
   const [replacementWord, setReplacementWord] = useState<string>(() => {
-    return localStorage.getItem('seo_replacement_word') ?? DEFAULT_REPLACEMENT_WORD;
+    return (
+      localStorage.getItem('seo_replacement_word') ??
+      (localStorage.getItem('seo_default_replacement_word') ||
+        DEFAULT_REPLACEMENT_WORD)
+    );
   });
   const [language, setLanguage] = useState<string>(() => {
     return localStorage.getItem('seo_language') ?? 'English';
@@ -105,13 +191,26 @@ export default function App() {
     }
   });
   const [selectedAirlines, setSelectedAirlines] = useState<Record<string, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem('seo_selected_airlines');
+      if (saved) return JSON.parse(saved);
+    } catch {
+      // ignore
+    }
     const map: Record<string, boolean> = {};
     DEFAULT_AIRLINES.forEach((a) => {
       map[a] = true;
     });
     return map;
   });
-  const [detectedAirlines, setDetectedAirlines] = useState<string[]>([]);
+  const [detectedAirlines, setDetectedAirlines] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('seo_detected_airlines');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
   const [airlineSearch, setAirlineSearch] = useState('');
 
   // Output Options
@@ -124,20 +223,45 @@ export default function App() {
     return localStorage.getItem('seo_google_doc_url') ?? DEFAULT_GOOGLE_DOC_URL;
   });
 
-  // Template Attachment State
-  const [templateName, setTemplateName] = useState<string | null>(null);
-  const [templateBuffer, setTemplateBuffer] = useState<ArrayBuffer | null>(null);
+  // Template Attachment State (persisted across accidental tab closes/refreshes)
+  const [templateName, setTemplateName] = useState<string | null>(() => {
+    return localStorage.getItem('seo_template_name') || null;
+  });
+  const [templateBuffer, setTemplateBuffer] = useState<ArrayBuffer | null>(() => {
+    try {
+      const b64 = localStorage.getItem('seo_template_base64');
+      if (b64) {
+        return base64ToUint8Array(b64).buffer as ArrayBuffer;
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Whiteboard State
-  const [whiteboardText, setWhiteboardText] = useState(
-    'Write or paste your content here.\nYou can add emojis, symbols, and rich text content.\nCall Qatar support at +1-800-555-0199 for missed flight assistance.'
-  );
-  const [wbFontFamily, setWbFontFamily] = useState('Calibri');
-  const [wbFontSize, setWbFontSize] = useState(11);
-  const [wbBold, setWbBold] = useState(false);
-  const [wbItalic, setWbItalic] = useState(false);
-  const [wbUnderline, setWbUnderline] = useState(false);
+  // Whiteboard State (persisted across accidental tab closes/refreshes)
+  const [whiteboardText, setWhiteboardText] = useState<string>(() => {
+    return (
+      localStorage.getItem('seo_whiteboard_text') ??
+      'Write or paste your content here.\nYou can add emojis, symbols, and rich text content.\nCall Qatar support at +1-800-555-0199 for missed flight assistance.'
+    );
+  });
+  const [wbFontFamily, setWbFontFamily] = useState<string>(() => {
+    return localStorage.getItem('seo_wb_font_family') || 'Calibri';
+  });
+  const [wbFontSize, setWbFontSize] = useState<number>(() => {
+    return Number(localStorage.getItem('seo_wb_font_size')) || 11;
+  });
+  const [wbBold, setWbBold] = useState<boolean>(() => {
+    return localStorage.getItem('seo_wb_bold') === 'true';
+  });
+  const [wbItalic, setWbItalic] = useState<boolean>(() => {
+    return localStorage.getItem('seo_wb_italic') === 'true';
+  });
+  const [wbUnderline, setWbUnderline] = useState<boolean>(() => {
+    return localStorage.getItem('seo_wb_underline') === 'true';
+  });
   const whiteboardRef = useRef<HTMLTextAreaElement>(null);
 
   // Generation & Sync State
@@ -153,6 +277,7 @@ export default function App() {
   // Airline Manager Modal
   const [showAirlineManager, setShowAirlineManager] = useState(false);
   const [bulkAirlinesInput, setBulkAirlinesInput] = useState('');
+  const [automationSeedUrls, setAutomationSeedUrls] = useState<string[]>([]);
 
   // Settings & LibreOffice State
   const [credentials, setCredentials] = useState<ServiceAccountCredentials>(() => {
@@ -199,6 +324,66 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('seo_google_doc_url', googleDocUrl);
   }, [googleDocUrl]);
+
+  useEffect(() => {
+    localStorage.setItem('seo_last_active_tab', activeTab);
+  }, [activeTab]);
+
+  useEffect(() => {
+    localStorage.setItem('seo_last_home_mode', homeMode);
+  }, [homeMode]);
+
+  useEffect(() => {
+    localStorage.setItem('seo_selected_airlines', JSON.stringify(selectedAirlines));
+  }, [selectedAirlines]);
+
+  useEffect(() => {
+    localStorage.setItem('seo_detected_airlines', JSON.stringify(detectedAirlines));
+  }, [detectedAirlines]);
+
+  useEffect(() => {
+    localStorage.setItem('seo_whiteboard_text', whiteboardText);
+  }, [whiteboardText]);
+
+  useEffect(() => {
+    localStorage.setItem('seo_wb_font_family', wbFontFamily);
+    localStorage.setItem('seo_wb_font_size', String(wbFontSize));
+    localStorage.setItem('seo_wb_bold', String(wbBold));
+    localStorage.setItem('seo_wb_italic', String(wbItalic));
+    localStorage.setItem('seo_wb_underline', String(wbUnderline));
+  }, [wbFontFamily, wbFontSize, wbBold, wbItalic, wbUnderline]);
+
+  useEffect(() => {
+    if (templateName && templateBuffer) {
+      try {
+        localStorage.setItem('seo_template_name', templateName);
+        localStorage.setItem(
+          'seo_template_base64',
+          arrayBufferToBase64(templateBuffer)
+        );
+      } catch {
+        // ignore if template exceeds localStorage quota
+      }
+    }
+  }, [templateName, templateBuffer]);
+
+  // Immediately clear any auth token on page unload, tab close, or refresh while keeping workspace saved
+  useEffect(() => {
+    localStorage.removeItem('seo_studio_auth_session');
+    sessionStorage.removeItem('seo_studio_auth_session');
+
+    const handleTabUnloadOrClose = () => {
+      localStorage.removeItem('seo_studio_auth_session');
+      sessionStorage.removeItem('seo_studio_auth_session');
+    };
+
+    window.addEventListener('beforeunload', handleTabUnloadOrClose);
+    window.addEventListener('pagehide', handleTabUnloadOrClose);
+    return () => {
+      window.removeEventListener('beforeunload', handleTabUnloadOrClose);
+      window.removeEventListener('pagehide', handleTabUnloadOrClose);
+    };
+  }, []);
 
   const checkServerStatus = async () => {
     const baseUrl = localBridgeUrl.trim().replace(/\/$/, '');
@@ -348,8 +533,16 @@ export default function App() {
       return;
     }
 
-    if (!oldTfn.trim() || !newTfn.trim()) {
-      setStatusMessage('Input Required: Please provide both Old and New TFN values.');
+    // If Old TFN is left empty, automatically use the configured Default Old TFN directly
+    const effectiveOldTfn = oldTfn.trim() || defaultOldTfn || DEFAULT_OLD_TFN;
+    const effectiveNewTfn = newTfn.trim() || defaultNewTfn || DEFAULT_NEW_TFN;
+    const effectiveWord =
+      replacementWord.trim() ||
+      defaultReplacementWord ||
+      DEFAULT_REPLACEMENT_WORD;
+
+    if (!effectiveNewTfn) {
+      setStatusMessage('Input Required: Please provide a New TFN value.');
       return;
     }
 
@@ -370,7 +563,7 @@ export default function App() {
 
     setIsGenerating(true);
     setStatusMessage(
-      `Generating web-native PDFs for ${activeSelectedAirlines.length} airline(s)...`
+      `Generating web-native PDFs for ${activeSelectedAirlines.length} airline(s) (Old TFN: ${effectiveOldTfn} → New TFN: ${effectiveNewTfn})...`
     );
 
     try {
@@ -392,9 +585,9 @@ export default function App() {
           docxBytes = await createDocxFromWhiteboard(
             whiteboardText,
             airline,
-            oldTfn.trim(),
-            newTfn.trim(),
-            replacementWord.trim() || DEFAULT_REPLACEMENT_WORD,
+            effectiveOldTfn,
+            effectiveNewTfn,
+            effectiveWord,
             airlines,
             detectedAirlines,
             wbStyle
@@ -402,9 +595,9 @@ export default function App() {
           pdfBytes = createPdfFromWhiteboard(
             whiteboardText,
             airline,
-            oldTfn.trim(),
-            newTfn.trim(),
-            replacementWord.trim() || DEFAULT_REPLACEMENT_WORD,
+            effectiveOldTfn,
+            effectiveNewTfn,
+            effectiveWord,
             airlines,
             detectedAirlines,
             wbStyle
@@ -413,9 +606,9 @@ export default function App() {
           docxBytes = await processDocxTemplateBuffer(
             templateBuffer!,
             airline,
-            oldTfn.trim(),
-            newTfn.trim(),
-            replacementWord.trim() || DEFAULT_REPLACEMENT_WORD,
+            effectiveOldTfn,
+            effectiveNewTfn,
+            effectiveWord,
             airlines,
             detectedAirlines
           );
@@ -513,6 +706,134 @@ export default function App() {
     }
   };
 
+  // Direct Share to 3rd-Party Apps + Auto-Download (Single PDF/DOCX or Full ZIP)
+  const shareSingleFile = async (
+    item: GeneratedFileItem,
+    format: 'pdf' | 'docx' = 'pdf'
+  ) => {
+    // 1. Auto-download immediately so the file is saved without an extra step
+    downloadSingleFile(item, format);
+
+    const fileName = `${item.name}.${format}`;
+    const mimeType =
+      format === 'pdf'
+        ? 'application/pdf'
+        : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    const bytes = format === 'pdf' ? item.pdfBytes : item.docxBytes;
+
+    // 2. Attempt native OS / Browser file share to 3rd-party apps
+    try {
+      const fileObj = new File([bytes.buffer as ArrayBuffer], fileName, {
+        type: mimeType,
+      });
+      const nav = navigator as Navigator & {
+        canShare?: (data?: ShareData) => boolean;
+      };
+      if (nav.share && (!nav.canShare || nav.canShare({ files: [fileObj] }))) {
+        await nav.share({
+          title: `${item.airline} Airlines Document (${fileName})`,
+          text: `Sharing ${item.airline} Airlines document (${fileName}) — TFN: ${
+            newTfn || defaultNewTfn
+          }`,
+          files: [fileObj],
+        });
+        setStatusMessage(
+          `Auto-downloaded & shared ${fileName} to 3rd-party app!`
+        );
+        return;
+      }
+    } catch {
+      // Fallback to 3rd-Party App Share Modal if native share sheet was dismissed or unsupported
+    }
+
+    setShareModalTarget({
+      fileName,
+      airlineLabel: item.airline,
+      fileCount: 1,
+    });
+    setStatusMessage(
+      `Auto-downloaded ${fileName}! Select a 3rd-party app to share.`
+    );
+  };
+
+  const shareOutputZip = async (
+    items = generatedFiles,
+    batchFolder = outputBatchName || 'seo-pdfs'
+  ) => {
+    if (items.length === 0) {
+      setStatusMessage(
+        'No Output: Generate documents first before sharing ZIP.'
+      );
+      return;
+    }
+
+    const zip = new JSZip();
+    const root = zip.folder(batchFolder)!;
+    for (const item of items) {
+      root.file(`${item.name}.pdf`, item.pdfBytes);
+      if (includeDocxInZip) {
+        root.folder('docx')!.file(`${item.name}.docx`, item.docxBytes);
+      }
+    }
+
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const zipFileName = `archive-${generateSequenceName('zip')}.zip`;
+
+    // 1. Auto-download the ZIP immediately
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = zipFileName;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    // 2. Attempt native Web Share with ZIP file
+    try {
+      const zipFile = new File([blob], zipFileName, {
+        type: 'application/zip',
+      });
+      const nav = navigator as Navigator & {
+        canShare?: (data?: ShareData) => boolean;
+      };
+      if (nav.share && (!nav.canShare || nav.canShare({ files: [zipFile] }))) {
+        await nav.share({
+          title: `SEO AUTOMATOR Output ZIP (${items.length} files)`,
+          text: `Sharing ${items.length} generated airline PDFs (${zipFileName}) — TFN: ${
+            newTfn || defaultNewTfn
+          }`,
+          files: [zipFile],
+        });
+        setStatusMessage(
+          `Auto-downloaded & shared ${zipFileName} (${items.length} files)!`
+        );
+        return;
+      }
+    } catch {
+      // Fallback to 3rd-Party App Share Modal
+    }
+
+    setShareModalTarget({
+      fileName: zipFileName,
+      airlineLabel: `${items.length} Airlines Batch`,
+      fileCount: items.length,
+    });
+    setStatusMessage(
+      `Auto-downloaded ${zipFileName}! Choose a 3rd-party app to share.`
+    );
+  };
+
+  const handleResetHomeDefaultValues = () => {
+    localStorage.removeItem('seo_old_tfn');
+    localStorage.removeItem('seo_new_tfn');
+    localStorage.removeItem('seo_replacement_word');
+    setOldTfn(defaultOldTfn);
+    setNewTfn(defaultNewTfn);
+    setReplacementWord(defaultReplacementWord);
+    setStatusMessage(
+      `Reset Old TFN (${defaultOldTfn}), New TFN (${defaultNewTfn}), and Replacement Word (${defaultReplacementWord}) to configured defaults.`
+    );
+  };
+
   const deleteLatestOutput = () => {
     if (generatedFiles.length === 0 && !templateBuffer) {
       setStatusMessage('No Output: There is no generated output or attached DOCX to delete.');
@@ -571,127 +892,291 @@ export default function App() {
 
   const handleLogout = () => {
     localStorage.removeItem('seo_studio_auth_session');
+    sessionStorage.removeItem('seo_studio_auth_session');
     setIsAuthenticated(false);
   };
 
+  const navItems: Array<{
+    id: TopTab;
+    label: string;
+    shortLabel: string;
+    description: string;
+    icon: React.ComponentType<{ className?: string }>;
+  }> = [
+    {
+      id: 'home',
+      label: 'Airlines Pdf Generator',
+      shortLabel: 'Airlines PDF',
+      description: 'Multi-Airline PDF & DOCX Studio',
+      icon: Home,
+    },
+    {
+      id: 'concat',
+      label: 'Link Conc Generator',
+      shortLabel: 'Link Conc',
+      description: 'URL Builder & Sheet Sync',
+      icon: Link2,
+    },
+    {
+      id: 'airline-content',
+      label: 'Airline Content',
+      shortLabel: 'Airlines',
+      description: 'SEO Article Generator',
+      icon: FileText,
+    },
+    {
+      id: 'rank',
+      label: 'Rank Checker',
+      shortLabel: 'Rank Check',
+      description: 'Multi-Country SERP Audit',
+      icon: Globe,
+    },
+    {
+      id: 'seo-automation',
+      label: 'SEO Bulk Automation',
+      shortLabel: 'Bulk SEO',
+      description: 'Whitehat & Blackhat Suite',
+      icon: Sparkles,
+    },
+    {
+      id: 'settings',
+      label: 'Settings',
+      shortLabel: 'Settings',
+      description: 'Defaults, Keys & Security',
+      icon: Settings,
+    },
+  ];
+
+  const currentNavItem =
+    navItems.find((item) => item.id === activeTab) || navItems[0];
+
+  const handleSelectTab = (tabId: TopTab) => {
+    setActiveTab(tabId);
+    setMobileMenuOpen(false);
+  };
+
   if (!isAuthenticated) {
-    return <LoginScreen onAuthenticated={() => setIsAuthenticated(true)} />;
+    return (
+      <LoginScreen
+        onAuthenticated={() => setIsAuthenticated(true)}
+        hasSavedWorkspace={hasSavedWorkspace}
+        lastSavedTab={activeTab}
+      />
+    );
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900">
-      {/* 3-Zone Top Bar Contract */}
-      <header className="sticky top-0 z-30 bg-white border-b border-slate-200 px-4 sm:px-8 h-16 flex items-center justify-between gap-4">
-        {/* Zone 1: Brand Wordmark (single text element) */}
-        <a
-          href="#top"
-          onClick={(e) => {
-            e.preventDefault();
-            setActiveTab('home');
-          }}
-          className="text-base sm:text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0"
-        >
-          SEO Document Studio
-        </a>
+    <div className="min-h-screen flex bg-slate-50 text-slate-900">
+      {/* Mobile Slide-Over Sidebar Backdrop */}
+      {mobileMenuOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-xs lg:hidden"
+          onClick={() => setMobileMenuOpen(false)}
+        />
+      )}
 
-        {/* Zone 2: 5 Single-Line Navigation Links */}
-        <nav className="flex items-center gap-1 sm:gap-5 overflow-x-auto no-scrollbar py-1">
+      {/* Side Navigation (Clean Modern Light UI matching the workspace) */}
+      <aside
+        className={`fixed inset-y-0 left-0 z-50 flex flex-col bg-white text-slate-800 border-r border-slate-200 transition-all duration-200 lg:sticky lg:top-0 lg:h-screen ${
+          sidebarCollapsed ? 'lg:w-20' : 'lg:w-68'
+        } ${
+          mobileMenuOpen
+            ? 'translate-x-0 w-72 shadow-2xl'
+            : '-translate-x-full w-72 lg:translate-x-0'
+        }`}
+      >
+        {/* Sidebar Top Header: User Profile Icon + SEO AUTOMATOR + Workspace Suite · TANU SINGH */}
+        <div className="h-18 px-4 border-b border-slate-200 flex items-center justify-between gap-2 shrink-0 bg-slate-50/50">
           <button
             type="button"
-            onClick={() => setActiveTab('home')}
-            className={`px-2.5 py-1.5 text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap shrink-0 border-b-2 cursor-pointer ${
-              activeTab === 'home'
-                ? 'border-blue-600 text-blue-600'
-                : 'border-transparent text-slate-600 hover:text-slate-900'
-            }`}
+            onClick={() => handleSelectTab('home')}
+            className="flex items-center gap-3 min-w-0 text-left cursor-pointer"
           >
-            Home
+            <img
+              src={userAvatarUrl}
+              alt={userName}
+              referrerPolicy="no-referrer"
+              className="w-10 h-10 rounded-full object-cover border-2 border-blue-600 shadow-xs shrink-0"
+            />
+            {(!sidebarCollapsed || mobileMenuOpen) && (
+              <div className="min-w-0">
+                <span className="text-sm font-extrabold tracking-tight text-slate-900 block truncate">
+                  SEO AUTOMATOR
+                </span>
+                <span className="text-[11px] font-semibold text-blue-700 block truncate">
+                  Workspace Suite · {userName}
+                </span>
+              </div>
+            )}
           </button>
+
+          {/* Desktop Collapse Button */}
           <button
             type="button"
-            onClick={() => setActiveTab('concat')}
-            className={`px-2.5 py-1.5 text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap shrink-0 border-b-2 cursor-pointer ${
-              activeTab === 'concat'
-                ? 'border-blue-600 text-blue-600'
-                : 'border-transparent text-slate-600 hover:text-slate-900'
-            }`}
+            onClick={() => setSidebarCollapsed((prev) => !prev)}
+            className="hidden lg:inline-flex p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
+            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
-            Link Conc Generator
+            {sidebarCollapsed ? (
+              <PanelLeftOpen className="w-4 h-4" />
+            ) : (
+              <PanelLeftClose className="w-4 h-4" />
+            )}
           </button>
+
+          {/* Mobile Close Drawer Button */}
           <button
             type="button"
-            onClick={() => setActiveTab('airline-content')}
-            className={`px-2.5 py-1.5 text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap shrink-0 border-b-2 cursor-pointer ${
-              activeTab === 'airline-content'
-                ? 'border-blue-600 text-blue-600'
-                : 'border-transparent text-slate-600 hover:text-slate-900'
-            }`}
+            onClick={() => setMobileMenuOpen(false)}
+            className="lg:hidden p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
+            title="Close navigation"
           >
-            Airline Content
+            <X className="w-5 h-5" />
           </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('rank')}
-            className={`px-2.5 py-1.5 text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap shrink-0 border-b-2 cursor-pointer ${
-              activeTab === 'rank'
-                ? 'border-blue-600 text-blue-600'
-                : 'border-transparent text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            Rank Checker
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('settings')}
-            className={`px-2.5 py-1.5 text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap shrink-0 border-b-2 cursor-pointer ${
-              activeTab === 'settings'
-                ? 'border-blue-600 text-blue-600'
-                : 'border-transparent text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            Settings
-          </button>
+        </div>
+
+        {/* Navigation Links inside Side Navigation */}
+        <nav className="flex-1 px-3 py-4 space-y-1.5 overflow-y-auto">
+          {(!sidebarCollapsed || mobileMenuOpen) && (
+            <div className="px-2.5 pb-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+              Navigation
+            </div>
+          )}
+          {navItems.map((item) => {
+            const IconComponent = item.icon;
+            const isActive = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => handleSelectTab(item.id)}
+                title={
+                  sidebarCollapsed
+                    ? `${item.label} — ${item.description}`
+                    : undefined
+                }
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors cursor-pointer ${
+                  isActive
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900'
+                } ${
+                  sidebarCollapsed && !mobileMenuOpen
+                    ? 'justify-center px-0'
+                    : ''
+                }`}
+              >
+                <IconComponent
+                  className={`w-4 h-4 shrink-0 ${
+                    isActive ? 'text-white' : 'text-blue-600'
+                  }`}
+                />
+                {(!sidebarCollapsed || mobileMenuOpen) && (
+                  <div className="min-w-0 flex-1">
+                    <span className="text-xs font-bold block truncate">
+                      {item.label}
+                    </span>
+                    <span
+                      className={`text-[10px] block truncate ${
+                        isActive ? 'text-blue-100' : 'text-slate-500'
+                      }`}
+                    >
+                      {item.description}
+                    </span>
+                  </div>
+                )}
+              </button>
+            );
+          })}
         </nav>
 
-        {/* Zone 3: 1-2 Primary Actions */}
-        <div className="flex items-center gap-2.5 shrink-0">
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab('home');
-              runGeneration(homeMode === 'whiteboard');
-            }}
-            disabled={isGenerating}
-            className="hidden sm:inline-flex px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg transition-colors items-center gap-1.5 whitespace-nowrap cursor-pointer"
-          >
-            <Zap className="w-3.5 h-3.5" />
-            <span>{isGenerating ? 'Generating...' : 'Generate Document'}</span>
-          </button>
+        {/* Sidebar Bottom Action: Logout Only (Removed duplicate Generate button) */}
+        <div className="p-3 border-t border-slate-200 bg-slate-50/50 shrink-0">
           <button
             type="button"
             onClick={handleLogout}
-            className="px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
-            title="Sign out"
+            title="Logout"
+            className={`w-full h-10 bg-white hover:bg-red-50 border border-slate-200 hover:border-red-200 text-slate-700 hover:text-red-700 text-xs font-bold rounded-xl transition-colors flex items-center justify-center gap-2 cursor-pointer ${
+              sidebarCollapsed && !mobileMenuOpen ? 'px-0' : 'px-3.5'
+            }`}
           >
-            <LogOut className="w-3.5 h-3.5" />
-            <span>Logout</span>
+            <LogOut className="w-4 h-4 shrink-0" />
+            {(!sidebarCollapsed || mobileMenuOpen) && <span>Logout</span>}
           </button>
         </div>
-      </header>
+      </aside>
 
-      {/* Main Content Container */}
-      <main className="flex-1 max-w-[1360px] w-full mx-auto px-4 sm:px-8 py-6">
+      {/* Right Content Column */}
+      <div className="flex-1 flex flex-col min-w-0 pb-16 lg:pb-0">
+        {/* Responsive Top Context Bar (Clean Light UI, No Duplicate Generate Button) */}
+        <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-xs border-b border-slate-200 px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(true)}
+              className="lg:hidden p-2 -ml-1 rounded-lg text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
+              title="Open menu"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+            <div className="min-w-0">
+              <h1 className="text-sm sm:text-base font-bold text-slate-900 truncate">
+                {currentNavItem.label}
+              </h1>
+              <p className="text-[11px] text-slate-500 hidden sm:block truncate">
+                {currentNavItem.description}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2.5 shrink-0">
+            <div className="hidden sm:flex items-center gap-2 pr-2 border-r border-slate-200">
+              <img
+                src={userAvatarUrl}
+                alt={userName}
+                referrerPolicy="no-referrer"
+                className="w-7 h-7 rounded-full object-cover border border-blue-500"
+              />
+              <span className="text-xs font-bold text-slate-800">
+                {userName}
+              </span>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+              title="Sign out"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Logout</span>
+            </button>
+          </div>
+        </header>
+
+        {/* Main Content Container */}
+        <main className="flex-1 max-w-[1400px] w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6">
         {activeTab === 'home' && (
           <div className="space-y-6">
             {/* Shared Setup Section */}
             <section className="bg-white border border-slate-200 rounded-xl p-5 sm:p-6">
               <div className="flex flex-wrap items-center justify-between gap-2 pb-4 mb-5 border-b border-slate-200">
-                <h1 className="text-base sm:text-lg font-bold text-slate-900">
-                  Shared Setup
-                </h1>
-                <p className="text-xs italic text-slate-500">
-                  These controls stay available across both Attach Document and Whiteboard modes.
-                </p>
+                <div>
+                  <h2 className="text-base sm:text-lg font-bold text-slate-900">
+                    Airlines Pdf Generator — Shared Setup
+                  </h2>
+                  <p className="text-xs italic text-slate-500">
+                    Leave Old TFN empty to automatically use your Default Old TFN ({defaultOldTfn}).
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleResetHomeDefaultValues}
+                  className="h-8 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition-colors inline-flex items-center gap-1.5 cursor-pointer"
+                  title="Reset Old TFN, New TFN, and Replacement Word to configured defaults"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Reset Default Values</span>
+                </button>
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -699,14 +1184,29 @@ export default function App() {
                 <div className="lg:col-span-7 space-y-4">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                        Old TFN Number
-                      </label>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="block text-xs font-semibold text-slate-700">
+                          Old TFN Number
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            localStorage.removeItem('seo_old_tfn');
+                            setOldTfn('');
+                          }}
+                          className="text-[11px] font-medium text-blue-600 hover:underline cursor-pointer"
+                        >
+                          Clear (Use Default: {defaultOldTfn})
+                        </button>
+                      </div>
                       <input
                         type="text"
                         value={oldTfn}
-                        onChange={(e) => setOldTfn(e.target.value)}
-                        placeholder="e.g. +1-800-555-0199 (or Sync Google Doc)"
+                        onChange={(e) => {
+                          localStorage.removeItem('seo_old_tfn');
+                          setOldTfn(e.target.value);
+                        }}
+                        placeholder={`Default when empty: ${defaultOldTfn}`}
                         className="w-full h-10 px-3.5 rounded-lg border border-slate-300 text-sm font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
                       />
                     </div>
@@ -940,6 +1440,16 @@ export default function App() {
 
                         <button
                           type="button"
+                          onClick={() => shareOutputZip()}
+                          className="h-10 px-3 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
+                          title="Auto-downloads ZIP and directly shares to 3rd-party apps"
+                        >
+                          <Share2 className="w-3.5 h-3.5" />
+                          <span>Share Output ZIP</span>
+                        </button>
+
+                        <button
+                          type="button"
                           disabled={isGenerating}
                           onClick={() => runGeneration(homeMode === 'whiteboard')}
                           className="h-10 px-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
@@ -953,7 +1463,7 @@ export default function App() {
                         <button
                           type="button"
                           onClick={() => setShowAirlineManager(true)}
-                          className="h-10 px-3 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
+                          className="h-10 px-3 bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
                         >
                           <Sliders className="w-3.5 h-3.5" />
                           <span>Manage Airlines</span>
@@ -963,7 +1473,7 @@ export default function App() {
                           type="button"
                           disabled={isSyncingDoc}
                           onClick={handleSyncGoogleDoc}
-                          className="h-10 px-3 bg-blue-700 hover:bg-blue-800 disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
+                          className="h-10 px-3 bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 disabled:opacity-50 text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
                         >
                           <RefreshCw
                             className={`w-3.5 h-3.5 ${
@@ -987,7 +1497,7 @@ export default function App() {
                         <button
                           type="button"
                           onClick={deleteLatestOutput}
-                          className="h-10 px-3 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
+                          className="col-span-2 h-9 px-3 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                           <span>Delete Latest Output</span>
@@ -1243,6 +1753,15 @@ export default function App() {
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
+                      onClick={() => shareOutputZip()}
+                      className="h-8 px-3 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
+                      title="Auto-download ZIP and directly share to 3rd-party apps"
+                    >
+                      <Share2 className="w-3.5 h-3.5" />
+                      <span>Share All as ZIP</span>
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => downloadOutputZip()}
                       className="h-8 px-3 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
                     >
@@ -1267,6 +1786,15 @@ export default function App() {
                         </span>
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => shareSingleFile(file, 'pdf')}
+                          className="px-2 py-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-md transition-colors flex items-center gap-1 cursor-pointer"
+                          title="Auto-download PDF and share to 3rd-party apps"
+                        >
+                          <Share2 className="w-3.5 h-3.5" />
+                          <span>Share</span>
+                        </button>
                         <button
                           type="button"
                           onClick={() => downloadSingleFile(file, 'pdf')}
@@ -1296,25 +1824,110 @@ export default function App() {
         )}
 
         {activeTab === 'concat' && (
-          <LinkConcatenatorPanel credentials={credentials} />
+          <LinkConcatenatorPanel
+            credentials={credentials}
+            onSendUrlsToAutomation={(urls) => {
+              setAutomationSeedUrls(urls);
+              setActiveTab('seo-automation');
+            }}
+          />
         )}
 
         {activeTab === 'airline-content' && <AirlineContentGeneratorPanel />}
 
         {activeTab === 'rank' && <RankCheckerPanel />}
 
+        {activeTab === 'seo-automation' && (
+          <SeoBulkAutomationPanel
+            defaultTfn={newTfn}
+            airlines={airlines}
+            initialUrls={automationSeedUrls}
+            onSendToWhiteboard={(content) => {
+              setWhiteboardText(content);
+              setHomeMode('whiteboard');
+              setActiveTab('home');
+              setStatusMessage(
+                'Loaded spun article into Whiteboard! Click Generate Document to create PDFs.'
+              );
+            }}
+          />
+        )}
+
         {activeTab === 'settings' && (
           <SettingsAndGuidePanel
             credentials={credentials}
             onSaveCredentials={(creds) => {
+              localStorage.removeItem('seo_credentials');
               setCredentials(creds);
               localStorage.setItem('seo_credentials', JSON.stringify(creds));
             }}
             googleDocUrl={googleDocUrl}
-            onChangeGoogleDocUrl={setGoogleDocUrl}
+            onChangeGoogleDocUrl={(nextUrl) => {
+              localStorage.removeItem('seo_google_doc_url');
+              localStorage.removeItem('seo_template_base64');
+              localStorage.removeItem('seo_template_name');
+              setTemplateBuffer(null);
+              setTemplateName(null);
+              setGoogleDocUrl(nextUrl);
+            }}
+            defaultOldTfn={defaultOldTfn}
+            defaultNewTfn={defaultNewTfn}
+            defaultReplacementWord={defaultReplacementWord}
+            onUpdateDefaultValues={({ oldTfn: o, newTfn: n, replacementWord: w }) => {
+              setDefaultOldTfn(o);
+              setDefaultNewTfn(n);
+              setDefaultReplacementWord(w);
+              setOldTfn(o);
+              setNewTfn(n);
+              setReplacementWord(w);
+            }}
+            onResetAllDefaultValues={() => {
+              setDefaultOldTfn(DEFAULT_OLD_TFN);
+              setDefaultNewTfn(DEFAULT_NEW_TFN);
+              setDefaultReplacementWord(DEFAULT_REPLACEMENT_WORD);
+              setOldTfn(DEFAULT_OLD_TFN);
+              setNewTfn(DEFAULT_NEW_TFN);
+              setReplacementWord(DEFAULT_REPLACEMENT_WORD);
+            }}
+            userName={userName}
+            onChangeUserName={(nextName) => {
+              setUserName(nextName);
+              localStorage.setItem('seo_user_display_name', nextName);
+            }}
+            userAvatarUrl={userAvatarUrl}
+            onChangeUserAvatar={(nextAvatar) => {
+              setUserAvatarUrl(nextAvatar);
+              localStorage.setItem('seo_user_avatar_url', nextAvatar);
+            }}
           />
         )}
-      </main>
+        </main>
+
+        {/* Mobile Bottom Quick Navigation Bar for Any Device Support */}
+        <nav className="lg:hidden fixed bottom-0 inset-x-0 z-30 bg-white border-t border-slate-200 px-1 py-1 grid grid-cols-6 gap-0.5 shadow-lg">
+          {navItems.map((item) => {
+            const IconComponent = item.icon;
+            const isActive = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => handleSelectTab(item.id)}
+                className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-lg transition-colors cursor-pointer ${
+                  isActive
+                    ? 'text-blue-600 bg-blue-50/80 font-bold'
+                    : 'text-slate-500 hover:text-slate-900'
+                }`}
+              >
+                <IconComponent className="w-4 h-4 shrink-0" />
+                <span className="text-[10px] leading-tight mt-1 truncate max-w-full">
+                  {item.shortLabel}
+                </span>
+              </button>
+            );
+          })}
+        </nav>
+      </div>
 
       {/* Airline Manager Modal */}
       {showAirlineManager && (
@@ -1405,9 +2018,9 @@ export default function App() {
         </div>
       )}
 
-      {/* Google Doc Sync Results Modal */}
+      {/* Google Doc Sync Results Modal (Light UI) */}
       {syncModalLines && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white border border-slate-200 rounded-xl max-w-lg w-full p-5 shadow-xl">
             <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-200">
               <h3 className="text-sm font-bold text-slate-900">
@@ -1421,7 +2034,7 @@ export default function App() {
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <div className="fast-scroll-container max-h-80 p-3.5 bg-slate-900 text-slate-100 rounded-lg font-mono text-xs space-y-1">
+            <div className="fast-scroll-container max-h-80 p-3.5 bg-slate-50 border border-slate-200 text-slate-800 rounded-lg font-mono text-xs space-y-1">
               {syncModalLines.map((line, idx) => (
                 <div key={idx}>{line || '\u00A0'}</div>
               ))}
@@ -1430,6 +2043,124 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setSyncModalLines(null)}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg cursor-pointer"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 3rd-Party App Direct Share Modal (Opened after Auto-Download) */}
+      {shareModalTarget && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-600 flex items-center justify-center">
+                  <Share2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">
+                    Share to 3rd-Party Apps
+                  </h3>
+                  <p className="text-xs text-emerald-700 font-medium">
+                    ✓ Auto-Downloaded: {shareModalTarget.fileName}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShareModalTarget(null)}
+                className="text-slate-400 hover:text-slate-700 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Your file (<strong>{shareModalTarget.fileName}</strong>) has been automatically downloaded to your device. Choose a 3rd-party app below to share immediately:
+            </p>
+
+            <div className="grid grid-cols-2 gap-2.5">
+              <a
+                href={`https://api.whatsapp.com/send?text=${encodeURIComponent(
+                  `SEO AUTOMATOR — ${shareModalTarget.airlineLabel} (${shareModalTarget.fileName}) | TFN: ${
+                    newTfn || defaultNewTfn
+                  }`
+                )}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="h-10 px-3 rounded-xl bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 text-xs font-bold flex items-center justify-center gap-2"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>WhatsApp</span>
+              </a>
+
+              <a
+                href={`https://t.me/share/url?url=${encodeURIComponent(
+                  window.location.origin
+                )}&text=${encodeURIComponent(
+                  `SEO AUTOMATOR — ${shareModalTarget.airlineLabel} (${shareModalTarget.fileName}) | TFN: ${
+                    newTfn || defaultNewTfn
+                  }`
+                )}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="h-10 px-3 rounded-xl bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-800 text-xs font-bold flex items-center justify-center gap-2"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>Telegram</span>
+              </a>
+
+              <a
+                href={`https://mail.google.com/mail/?view=cm&fs=1&su=${encodeURIComponent(
+                  `SEO AUTOMATOR Output: ${shareModalTarget.fileName}`
+                )}&body=${encodeURIComponent(
+                  `Attached / Downloaded File: ${shareModalTarget.fileName}\nBatch: ${shareModalTarget.airlineLabel}\nActive TFN: ${
+                    newTfn || defaultNewTfn
+                  }`
+                )}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="h-10 px-3 rounded-xl bg-red-50 hover:bg-red-100 border border-red-200 text-red-800 text-xs font-bold flex items-center justify-center gap-2"
+              >
+                <Mail className="w-3.5 h-3.5" />
+                <span>Gmail Compose</span>
+              </a>
+
+              <button
+                type="button"
+                onClick={async () => {
+                  await navigator.clipboard.writeText(
+                    `SEO AUTOMATOR — ${shareModalTarget.airlineLabel} (${shareModalTarget.fileName}) | TFN: ${
+                      newTfn || defaultNewTfn
+                    }`
+                  );
+                  setCopiedShareText(true);
+                  setTimeout(() => setCopiedShareText(false), 1600);
+                }}
+                className="h-10 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-800 text-xs font-bold flex items-center justify-center gap-2 cursor-pointer"
+              >
+                {copiedShareText ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Copied Info!</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Copy Summary</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            <div className="flex justify-end pt-1">
+              <button
+                type="button"
+                onClick={() => setShareModalTarget(null)}
                 className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg cursor-pointer"
               >
                 Done

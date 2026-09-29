@@ -7,6 +7,7 @@ export const DEFAULT_REPLACEMENT_WORD = 'Qatar';
 export const GOOGLE_DOC_ID = '1wWLgilVoc0AabtNoDcmEHzYv2K4VjvHb7qfycs-ZCTU';
 export const DEFAULT_GOOGLE_DOC_URL = `https://docs.google.com/document/d/${GOOGLE_DOC_ID}/edit`;
 export const GOOGLE_SHEET_ID = '1E4gyzCpwb4eIwUubY6CiKkl9CjO49kw327D8bUfj5Fg';
+export const DEFAULT_GOOGLE_SHEET_URL = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/edit`;
 export const LIBREOFFICE_WEBSITE_URL = 'https://www.libreoffice.org/';
 export const LIBREOFFICE_DOWNLOAD_URL = 'https://www.libreoffice.org/download/';
 
@@ -30,6 +31,210 @@ export function extractGoogleDocId(input: string): string {
 export function buildGoogleDocUrl(input: string): string {
   const docId = extractGoogleDocId(input);
   return `https://docs.google.com/document/d/${docId}/edit`;
+}
+
+/**
+ * Extracts a clean Google Sheet ID from either a full Google Sheets URL or a raw ID string.
+ */
+export function extractGoogleSheetId(input: string): string {
+  const trimmed = (input || '').trim();
+  if (!trimmed) return GOOGLE_SHEET_ID;
+  const sheetMatch = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  if (sheetMatch && sheetMatch[1]) return sheetMatch[1];
+  const fileMatch = trimmed.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (fileMatch && fileMatch[1]) return fileMatch[1];
+  const idParamMatch = trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (idParamMatch && idParamMatch[1]) return idParamMatch[1];
+  const cleanId = trimmed.split(/[/?#&]/)[0].trim();
+  return cleanId || GOOGLE_SHEET_ID;
+}
+
+export function buildGoogleSheetUrl(input: string): string {
+  const sheetId = extractGoogleSheetId(input);
+  return `https://docs.google.com/spreadsheets/d/${sheetId}/edit`;
+}
+
+export interface SerpLocationOption {
+  code: string;
+  label: string;
+  gl: string;
+  hl: string;
+  cr: string;
+  googleDomain: string;
+  canonicalPlace: string;
+  acceptLang: string;
+}
+
+export const SERP_COUNTRY_LOCATIONS: SerpLocationOption[] = [
+  {
+    code: 'US',
+    label: 'United States (Google USA)',
+    gl: 'us',
+    hl: 'en',
+    cr: 'countryUS',
+    googleDomain: 'www.google.com',
+    canonicalPlace: 'United States',
+    acceptLang: 'en-US,en;q=0.9',
+  },
+  {
+    code: 'US-NY',
+    label: 'United States — New York, NY',
+    gl: 'us',
+    hl: 'en',
+    cr: 'countryUS',
+    googleDomain: 'www.google.com',
+    canonicalPlace: 'New York,New York,United States',
+    acceptLang: 'en-US,en;q=0.9',
+  },
+  {
+    code: 'US-CA',
+    label: 'United States — Los Angeles, CA',
+    gl: 'us',
+    hl: 'en',
+    cr: 'countryUS',
+    googleDomain: 'www.google.com',
+    canonicalPlace: 'Los Angeles,California,United States',
+    acceptLang: 'en-US,en;q=0.9',
+  },
+  {
+    code: 'US-TX',
+    label: 'United States — Dallas, TX',
+    gl: 'us',
+    hl: 'en',
+    cr: 'countryUS',
+    googleDomain: 'www.google.com',
+    canonicalPlace: 'Dallas,Texas,United States',
+    acceptLang: 'en-US,en;q=0.9',
+  },
+  {
+    code: 'UK',
+    label: 'United Kingdom (Google UK)',
+    gl: 'gb',
+    hl: 'en-GB',
+    cr: 'countryUK',
+    googleDomain: 'www.google.co.uk',
+    canonicalPlace: 'United Kingdom',
+    acceptLang: 'en-GB,en;q=0.9',
+  },
+  {
+    code: 'CA',
+    label: 'Canada (Google CA)',
+    gl: 'ca',
+    hl: 'en-CA',
+    cr: 'countryCA',
+    googleDomain: 'www.google.ca',
+    canonicalPlace: 'Canada',
+    acceptLang: 'en-CA,en;q=0.9',
+  },
+  {
+    code: 'AU',
+    label: 'Australia (Google AU)',
+    gl: 'au',
+    hl: 'en-AU',
+    cr: 'countryAU',
+    googleDomain: 'www.google.com.au',
+    canonicalPlace: 'Australia',
+    acceptLang: 'en-AU,en;q=0.9',
+  },
+  {
+    code: 'IN',
+    label: 'India (Google IN)',
+    gl: 'in',
+    hl: 'en-IN',
+    cr: 'countryIN',
+    googleDomain: 'www.google.co.in',
+    canonicalPlace: 'India',
+    acceptLang: 'en-IN,en;q=0.9',
+  },
+  {
+    code: 'AE',
+    label: 'United Arab Emirates (Google AE)',
+    gl: 'ae',
+    hl: 'en',
+    cr: 'countryAE',
+    googleDomain: 'www.google.ae',
+    canonicalPlace: 'United Arab Emirates',
+    acceptLang: 'en-AE,en;q=0.9',
+  },
+  {
+    code: 'DE',
+    label: 'Germany (Google DE)',
+    gl: 'de',
+    hl: 'de',
+    cr: 'countryDE',
+    googleDomain: 'www.google.de',
+    canonicalPlace: 'Germany',
+    acceptLang: 'de-DE,de;q=0.9,en;q=0.8',
+  },
+  {
+    code: 'FR',
+    label: 'France (Google FR)',
+    gl: 'fr',
+    hl: 'fr',
+    cr: 'countryFR',
+    googleDomain: 'www.google.fr',
+    canonicalPlace: 'France',
+    acceptLang: 'fr-FR,fr;q=0.9,en;q=0.8',
+  },
+  {
+    code: 'ES',
+    label: 'Spain (Google ES)',
+    gl: 'es',
+    hl: 'es',
+    cr: 'countryES',
+    googleDomain: 'www.google.es',
+    canonicalPlace: 'Spain',
+    acceptLang: 'es-ES,es;q=0.9,en;q=0.8',
+  },
+  {
+    code: 'MX',
+    label: 'Mexico (Google MX)',
+    gl: 'mx',
+    hl: 'es-419',
+    cr: 'countryMX',
+    googleDomain: 'www.google.com.mx',
+    canonicalPlace: 'Mexico',
+    acceptLang: 'es-MX,es;q=0.9,en;q=0.8',
+  },
+  {
+    code: 'SG',
+    label: 'Singapore (Google SG)',
+    gl: 'sg',
+    hl: 'en',
+    cr: 'countrySG',
+    googleDomain: 'www.google.com.sg',
+    canonicalPlace: 'Singapore',
+    acceptLang: 'en-SG,en;q=0.9',
+  },
+  {
+    code: 'QA',
+    label: 'Qatar (Google QA)',
+    gl: 'qa',
+    hl: 'en',
+    cr: 'countryQA',
+    googleDomain: 'www.google.com.qa',
+    canonicalPlace: 'Qatar',
+    acceptLang: 'en-QA,en;q=0.9',
+  },
+];
+
+const UULE_KEY_TABLE =
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
+/**
+ * Encodes any canonical location string (e.g., "United States" or "New York,New York,United States")
+ * into Google Search's official UULE geolocation parameter so users can browse any country/city SERP without a VPN.
+ */
+export function encodeGoogleUule(canonicalPlace: string): string {
+  const clean = (canonicalPlace || 'United States').trim();
+  const keyChar = UULE_KEY_TABLE[clean.length % UULE_KEY_TABLE.length] || 'E';
+  let b64 = '';
+  if (typeof btoa === 'function') {
+    b64 = btoa(unescape(encodeURIComponent(clean)));
+  } else {
+    b64 = Buffer.from(clean, 'utf-8').toString('base64');
+  }
+  return `w+CAIQICI${keyChar}${b64}`;
 }
 
 export const AVAILABLE_LANGUAGES = [
@@ -201,16 +406,19 @@ export function buildOutputName(airline: string): string {
   return generateSequenceName(slug);
 }
 
+export const FLEXIBLE_TFN_PATTERN =
+  /(?:\+?\d{1,3}[-–—\s._/]+)?(?:\(\s*\d{2,4}\s*\)|\d{2,4})[-–—\s._/]+(?:\(\s*\d{2,4}\s*\)|\d{2,4})[-–—\s._/]+(?:\(\s*\d{3,5}\s*\)|\d{3,5})(?:[-–—\s._/]+(?:\(\s*\d{2,4}\s*\)|\d{2,4}))?/g;
+
 export function detectTfnsInText(text: string): string[] {
   if (!text) return [];
-  const pattern = /(?:^|\s|,)([+]?[\d]{1,3}[-\s.]?\(?[\d]{2,4}\)?[-\s.]?[\d]{2,4}[-\s.]?[\d]{2,4}(?:[-\s.]?[\d]{2,4})?)(?=$|\s|,|\.)/g;
+  const pattern = new RegExp(FLEXIBLE_TFN_PATTERN.source, 'g');
   const seen = new Set<string>();
   const results: string[] = [];
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {
-    const candidate = (match[1] || match[0]).trim();
+    const candidate = match[0].trim();
     const digits = candidate.replace(/[^\d]/g, '');
-    if (digits.length >= 6 && digits.length <= 15 && !seen.has(candidate)) {
+    if (digits.length >= 10 && digits.length <= 15 && !seen.has(candidate)) {
       seen.add(candidate);
       results.push(candidate);
     }
@@ -223,22 +431,22 @@ export function replaceTfnInString(
   oldTfnRaw: string,
   newTfn: string
 ): string {
-  if (!text) return text;
+  if (!text || !newTfn) return text;
   let updated = text;
 
-  // 1. Replace explicit old TFNs first
-  const explicitOlds = parseOldTfns(oldTfnRaw);
+  // 1. Replace explicit old TFNs first (longest first so partial substrings don't leave prefixes)
+  const explicitOlds = parseOldTfns(oldTfnRaw).sort((a, b) => b.length - a.length);
   for (const oldVal of explicitOlds) {
     if (oldVal && updated.includes(oldVal)) {
       updated = updated.split(oldVal).join(newTfn);
     }
   }
 
-  // 2. Also run the regex detector from Python _replace_tfn
-  const phoneRegex = /([+]?[\d]{1,3}[-\s.]?\(?[\d]{2,4}\)?[-\s.]?[\d]{2,4}[-\s.]?[\d]{2,4}(?:[-\s.]?[\d]{2,4})?)/g;
+  // 2. Also run the flexible regex detector covering +1--(888)-548-7012, +1-(888)-548-(7012 ), etc.
+  const phoneRegex = new RegExp(FLEXIBLE_TFN_PATTERN.source, 'g');
   updated = updated.replace(phoneRegex, (matched) => {
     const digits = matched.replace(/[^\d]/g, '');
-    if (digits.length >= 6 && digits.length <= 15) {
+    if (digits.length >= 10 && digits.length <= 15) {
       return newTfn;
     }
     return matched;
@@ -292,7 +500,11 @@ export function replaceAirlineInString(
 
   let updated = text;
   for (const token of filteredTokens) {
-    if (token.includes(' ') || token.length > 10) {
+    if (
+      token.includes(' ') ||
+      token.length >= 4 ||
+      token.toLowerCase() === repWord.toLowerCase()
+    ) {
       const pattern = new RegExp(escapeRegExp(token), 'gi');
       updated = updated.replace(pattern, targetAirline);
     } else {
@@ -399,7 +611,7 @@ export async function processDocxTemplateBuffer(
 
     // Replace paragraph by paragraph: first try run-by-run to preserve inline styles,
     // and if a token was split across runs, fallback to paragraph-level replacement.
-    const updatedXml = xml.replace(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g, (paraXml) => {
+    const updatedXml = xml.replace(/<w:p(?:\s+[^/>]*)*>[\s\S]*?<\/w:p>/g, (paraXml) => {
       const tMatches = Array.from(paraXml.matchAll(/<w:t(?:\s+[^>]*)?>([\s\S]*?)<\/w:t>/g));
       if (tMatches.length === 0) return paraXml;
 

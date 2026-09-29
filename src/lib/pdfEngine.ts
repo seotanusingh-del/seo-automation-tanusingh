@@ -178,7 +178,8 @@ async function parseDocxIntoBlocks(docxBytes: Uint8Array): Promise<PdfDocBlock[]
   const bodyMatch = xml.match(/<w:body\b[^>]*>([\s\S]*?)<\/w:body>/);
   const bodyXml = bodyMatch ? bodyMatch[1] : xml;
 
-  const blockRegex = /<w:tbl\b[^>]*>[\s\S]*?<\/w:tbl>|<w:p\b[^>]*>[\s\S]*?<\/w:p>|<w:p\s*\/>/g;
+  const blockRegex =
+    /<w:tbl\b[^>]*>[\s\S]*?<\/w:tbl>|<w:p\b[^>]*?\/>|<w:p(?:\s+[^/>]*)*>[\s\S]*?<\/w:p>/g;
   let bm: RegExpExecArray | null;
 
   while ((bm = blockRegex.exec(bodyXml)) !== null) {
@@ -203,7 +204,7 @@ async function parseDocxIntoBlocks(docxBytes: Uint8Array): Promise<PdfDocBlock[]
           const textColor = parseHexColor(colorMatch?.[1]) || [15, 23, 42];
 
           const cellParas: string[] = [];
-          const pRegex = /<w:p\b[^>]*>([\s\S]*?)<\/w:p>/g;
+          const pRegex = /<w:p(?:\s+[^/>]*)*>([\s\S]*?)<\/w:p>/g;
           let pm: RegExpExecArray | null;
           while ((pm = pRegex.exec(cellXml)) !== null) {
             const tRegex = /<w:t(?:\s+[^>]*)?>([\s\S]*?)<\/w:t>/g;
@@ -636,7 +637,7 @@ export function createPdfFromWhiteboard(
   replacementWord: string,
   allKnownAirlines: string[],
   detectedAirlines: string[],
-  style: WhiteboardParagraphStyle
+  style: WhiteboardParagraphStyle = { fontFamily: 'Calibri', fontSize: 11 }
 ): Uint8Array {
   let processed = replaceTfnInString(rawText, oldTfn, newTfn);
   processed = replaceAirlineInString(

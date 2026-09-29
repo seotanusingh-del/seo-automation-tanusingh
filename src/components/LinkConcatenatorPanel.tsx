@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import {
   Plus,
@@ -11,8 +11,19 @@ import {
   RefreshCw,
   Check,
   X,
+  Table,
+  Sparkles,
+  ClipboardList,
+  CheckCircle2,
+  RotateCcw,
 } from 'lucide-react';
-import { ServiceAccountCredentials, GOOGLE_SHEET_ID } from '../lib/seoHelpers';
+import {
+  ServiceAccountCredentials,
+  DEFAULT_GOOGLE_SHEET_URL,
+  DEFAULT_AIRLINES,
+  extractGoogleSheetId,
+  buildGoogleSheetUrl,
+} from '../lib/seoHelpers';
 
 export interface ConcatRowItem {
   id: number;
@@ -24,17 +35,78 @@ export interface ConcatRowItem {
 
 interface LinkConcatenatorPanelProps {
   credentials: ServiceAccountCredentials;
+  onSendUrlsToAutomation?: (urls: string[]) => void;
 }
+
+const COLUMNS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 
 export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
   credentials,
+  onSendUrlsToAutomation,
 }) => {
-  const [prefix, setPrefix] = useState('http://prescott-az.gov');
-  const [suffix, setSuffix] = useState('');
-  const [rows, setRows] = useState<ConcatRowItem[]>([]);
-  const [rowCounter, setRowCounter] = useState(1);
+  const [prefix, setPrefix] = useState<string>(() => {
+    return localStorage.getItem('seo_concat_prefix') ?? 'http://prescott-az.gov';
+  });
+  const [suffix, setSuffix] = useState<string>(() => {
+    return localStorage.getItem('seo_concat_suffix') ?? '';
+  });
+  const [rows, setRows] = useState<ConcatRowItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('seo_concat_rows');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [rowCounter, setRowCounter] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('seo_concat_rows');
+      const parsed: ConcatRowItem[] = saved ? JSON.parse(saved) : [];
+      return parsed.length > 0 ? Math.max(...parsed.map((r) => r.id)) + 1 : 1;
+    } catch {
+      return 1;
+    }
+  });
+
+  // Google Sheet Configuration State (persisted so user can change sheet anytime)
+  const [sheetUrlInput, setSheetUrlInput] = useState<string>(() => {
+    return localStorage.getItem('seo_google_sheet_url') || DEFAULT_GOOGLE_SHEET_URL;
+  });
+  const [sheetTabName, setSheetTabName] = useState<string>(() => {
+    return localStorage.getItem('seo_google_sheet_tab') ?? 'SEO';
+  });
+  const [sheetColumn, setSheetColumn] = useState<string>(() => {
+    return localStorage.getItem('seo_google_sheet_col') || 'B';
+  });
+  const [sheetStartRow, setSheetStartRow] = useState<number>(() => {
+    return Number(localStorage.getItem('seo_google_sheet_start_row')) || 3;
+  });
+  const [includePrefixSuffixCols, setIncludePrefixSuffixCols] = useState<boolean>(false);
+
+  // Sheet verification & last sync receipt
+  const [verifiedSheetTitle, setVerifiedSheetTitle] = useState<string | null>(null);
+  const [availableSheetTabs, setAvailableSheetTabs] = useState<string[]>([]);
+  const [isCheckingSheet, setIsCheckingSheet] = useState(false);
+  const [lastSyncReceipt, setLastSyncReceipt] = useState<{
+    spreadsheetTitle: string;
+    updatedRange: string;
+    startRow: number;
+    endRow: number;
+    column: string;
+    syncedCount: number;
+    timestamp: string;
+    sheetUrl: string;
+  } | null>(null);
+  const [copiedServiceEmail, setCopiedServiceEmail] = useState(false);
+  const [copiedAllLinks, setCopiedAllLinks] = useState(false);
+
+  // Bulk Paste Modal State
+  const [showBulkModal, setShowBulkModal] = useState(false);
+  const [bulkSuffixText, setBulkSuffixText] = useState('');
+  const [airlineSlugTopic, setAirlineSlugTopic] = useState('missed-flight-policy');
+
   const [status, setStatus] = useState(
-    'Ready. Add prefix and suffix values to generate links.'
+    'Ready. Enter Prefix and Suffix above to concatenate links, or use Bulk Add.'
   );
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [autoSync, setAutoSync] = useState(false);
@@ -43,11 +115,102 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
   const [editSuffixValue, setEditSuffixValue] = useState('');
   const suffixInputRef = useRef<HTMLInputElement>(null);
 
+  useEffect(() => {
+    localStorage.setItem('seo_concat_prefix', prefix);
+  }, [prefix]);
+
+  useEffect(() => {
+    localStorage.setItem('seo_concat_suffix', suffix);
+  }, [suffix]);
+
+  useEffect(() => {
+    localStorage.setItem('seo_concat_rows', JSON.stringify(rows));
+  }, [rows]);
+
+  useEffect(() => {
+    localStorage.setItem('seo_google_sheet_url', sheetUrlInput);
+  }, [sheetUrlInput]);
+
+  useEffect(() => {
+    localStorage.setItem('seo_google_sheet_tab', sheetTabName);
+  }, [sheetTabName]);
+
+  useEffect(() => {
+    localStorage.setItem('seo_google_sheet_col', sheetColumn);
+  }, [sheetColumn]);
+
+  useEffect(() => {
+    localStorage.setItem('seo_google_sheet_start_row', String(sheetStartRow));
+  }, [sheetStartRow]);
+
+  const cleanSheetId = useMemo(
+    () => extractGoogleSheetId(sheetUrlInput),
+    [sheetUrlInput]
+  );
+
+  const liveRangePreview = useMemo(() => {
+    const start = Math.max(1, Number(sheetStartRow) || 3);
+    const count = Math.max(1, rows.length);
+    const end = start + count - 1;
+    const col = (sheetColumn || 'B').toUpperCase();
+    const endCol = includePrefixSuffixCols
+      ? String.fromCharCode(Math.min(90, col.charCodeAt(0) + 2))
+      : col;
+    const cellPart =
+      endCol !== col ? `${col}${start}:${endCol}${end}` : `${col}${start}:${col}${end}`;
+    const tabPart = sheetTabName.trim() ? `${sheetTabName.trim()}!` : '';
+    return {
+      fullRange: `${tabPart}${cellPart}`,
+      startRow: start,
+      endRow: rows.length > 0 ? end : start,
+      colDisplay: endCol !== col ? `${col} to ${endCol}` : col,
+    };
+  }, [sheetTabName, sheetColumn, sheetStartRow, rows.length, includePrefixSuffixCols]);
+
+  const handleCheckSheetInfo = async () => {
+    setIsCheckingSheet(true);
+    setStatus(`Checking Google Sheet (${cleanSheetId})...`);
+    try {
+      const res = await fetch('/api/check-google-sheet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          credentials,
+          sheetId: cleanSheetId,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Could not inspect Google Sheet');
+      }
+      setVerifiedSheetTitle(data.title);
+      if (Array.isArray(data.sheetTabs) && data.sheetTabs.length > 0) {
+        setAvailableSheetTabs(data.sheetTabs);
+        if (!data.sheetTabs.includes(sheetTabName) && data.sheetTabs[0]) {
+          setSheetTabName(data.sheetTabs[0]);
+        }
+      }
+      setStatus(
+        `Verified Google Sheet: "${data.title}" · Tabs found: ${
+          data.sheetTabs.join(', ') || 'Default'
+        }`
+      );
+    } catch (err: unknown) {
+      setStatus(
+        `Sheet Check Warning: ${err instanceof Error ? err.message : String(err)}`
+      );
+    } finally {
+      setIsCheckingSheet(false);
+    }
+  };
+
   const addRow = () => {
     const valA = prefix.trim();
     const valB = suffix.trim();
     if (!valA || !valB) {
-      setStatus('Input Error: Both Common Value (Prefix) and Variable Value (Suffix) are required.');
+      setStatus(
+        'Input Error: Both Common Value (Prefix) and Variable Value (Suffix) are required.'
+      );
       return;
     }
 
@@ -65,6 +228,84 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
     setSuffix('');
     setStatus(`Added row #${rowCounter}: ${concatResult}`);
     suffixInputRef.current?.focus();
+  };
+
+  const handleBulkAddSuffixes = () => {
+    const valA = prefix.trim();
+    if (!valA) {
+      setStatus('Please enter a Common Value (Prefix) first.');
+      return;
+    }
+    const lines = bulkSuffixText
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (lines.length === 0) {
+      setStatus('Paste at least one suffix line.');
+      return;
+    }
+
+    let nextId = rowCounter;
+    const newItems: ConcatRowItem[] = lines.map((line) => {
+      const item: ConcatRowItem = {
+        id: nextId++,
+        prefix: valA,
+        suffix: line,
+        result: valA + line,
+        selected: false,
+      };
+      return item;
+    });
+
+    setRows((prev) => [...prev, ...newItems]);
+    setRowCounter(nextId);
+    setBulkSuffixText('');
+    setShowBulkModal(false);
+    setStatus(`Bulk added ${newItems.length} concatenated links!`);
+  };
+
+  const handleGenerateAirlineSlugs = () => {
+    const valA = prefix.trim() || 'http://prescott-az.gov';
+    const cleanTopic =
+      airlineSlugTopic
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '') || 'missed-flight-policy';
+
+    let nextId = rowCounter;
+    const newItems: ConcatRowItem[] = DEFAULT_AIRLINES.map((airline) => {
+      const slug = airline
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '');
+      const sfx = `/${slug}-airlines-${cleanTopic}.pdf`;
+      return {
+        id: nextId++,
+        prefix: valA,
+        suffix: sfx,
+        result: valA + sfx,
+        selected: false,
+      };
+    });
+
+    setRows((prev) => [...prev, ...newItems]);
+    setRowCounter(nextId);
+    setStatus(
+      `Auto-generated ${newItems.length} airline SEO links (${cleanTopic})!`
+    );
+  };
+
+  const handleCopyAllLinks = async () => {
+    if (rows.length === 0) return;
+    try {
+      await navigator.clipboard.writeText(rows.map((r) => r.result).join('\n'));
+      setCopiedAllLinks(true);
+      setStatus(`Copied all ${rows.length} links to clipboard!`);
+      setTimeout(() => setCopiedAllLinks(false), 1800);
+    } catch {
+      setStatus('Clipboard copy failed.');
+    }
   };
 
   const handleCopy = async (id: number, text: string) => {
@@ -93,7 +334,9 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
   const selectAll = () => {
     const allSelected = rows.length > 0 && rows.every((r) => r.selected);
     setRows((prev) => prev.map((r) => ({ ...r, selected: !allSelected })));
-    setStatus(allSelected ? 'Deselected all rows.' : `Selected all ${rows.length} rows.`);
+    setStatus(
+      allSelected ? 'Deselected all rows.' : `Selected all ${rows.length} rows.`
+    );
   };
 
   const deleteSelected = () => {
@@ -148,7 +391,9 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
       setStatus('No Data: Add links before exporting to Excel.');
       return;
     }
-    const worksheetData = rows.map((r) => ({
+    const worksheetData = rows.map((r, index) => ({
+      'Sheet Row': Math.max(1, Number(sheetStartRow) || 3) + index,
+      'Target Cell': `${sheetColumn}${Math.max(1, Number(sheetStartRow) || 3) + index}`,
       'Row ID': r.id,
       'Generated Link': r.result,
       Prefix: r.prefix,
@@ -156,8 +401,11 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
     }));
     const worksheet = XLSX.utils.json_to_sheet(worksheetData);
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'SEO Links');
-    XLSX.writeFile(workbook, `seo-links-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    XLSX.utils.book_append_sheet(workbook, worksheet, sheetTabName || 'SEO');
+    XLSX.writeFile(
+      workbook,
+      `seo-links-${new Date().toISOString().slice(0, 10)}.xlsx`
+    );
     setStatus(`Exported ${rows.length} row(s) to Excel.`);
   };
 
@@ -173,17 +421,40 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           credentials,
-          sheetId: GOOGLE_SHEET_ID,
+          sheetId: cleanSheetId,
+          tabName: sheetTabName.trim(),
+          column: sheetColumn,
+          startRow: sheetStartRow,
+          includePrefixSuffix: includePrefixSuffixCols,
           links: rows.map((r) => r.result),
+          rowsData: rows.map((r) => ({
+            id: r.id,
+            prefix: r.prefix,
+            suffix: r.suffix,
+            result: r.result,
+          })),
         }),
       });
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.error || 'Failed to sync');
       }
+      if (data.spreadsheetTitle) {
+        setVerifiedSheetTitle(data.spreadsheetTitle);
+      }
+      setLastSyncReceipt({
+        spreadsheetTitle: data.spreadsheetTitle || 'Google Sheet',
+        updatedRange: data.updatedRange || liveRangePreview.fullRange,
+        startRow: data.startRow || liveRangePreview.startRow,
+        endRow: data.endRow || liveRangePreview.endRow,
+        column: data.column || sheetColumn,
+        syncedCount: data.syncedCount || rows.length,
+        timestamp: data.timestamp || new Date().toLocaleTimeString(),
+        sheetUrl: data.sheetUrl || buildGoogleSheetUrl(sheetUrlInput),
+      });
       setStatus(
         silent
-          ? `Auto-synced ${rows.length} links at ${data.timestamp}`
+          ? `Auto-synced ${rows.length} links to ${data.updatedRange} at ${data.timestamp}`
           : data.message
       );
     } catch (err: unknown) {
@@ -205,16 +476,39 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
       }
     }, 60000);
     return () => clearInterval(timer);
-  }, [autoSync, rows, credentials]);
+  }, [
+    autoSync,
+    rows,
+    credentials,
+    cleanSheetId,
+    sheetTabName,
+    sheetColumn,
+    sheetStartRow,
+    includePrefixSuffixCols,
+  ]);
 
   return (
     <div className="flex flex-col gap-5">
-      {/* Top Input Bar */}
-      <div className="bg-white border border-slate-200 rounded-xl p-5">
+      {/* 1. TOP PRIORITY: Link Concatenator Input Bar + Bulk Generators */}
+      <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100">
+          <div>
+            <h2 className="text-sm sm:text-base font-bold text-slate-900">
+              Link Concatenator (Combine Prefix &amp; Suffix)
+            </h2>
+            <p className="text-xs text-slate-500">
+              Enter your Common Value (Prefix) and Variable Value (Suffix) below to concatenate links immediately.
+            </p>
+          </div>
+          <span className="px-2.5 py-1 rounded-md bg-blue-50 border border-blue-200 text-blue-700 font-mono text-xs font-bold">
+            Sheet Target: {liveRangePreview.fullRange}
+          </span>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
           <div className="md:col-span-5">
             <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-              Common Value (Prefix)
+              Common Value (Prefix Domain / Path)
             </label>
             <input
               type="text"
@@ -226,7 +520,7 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
           </div>
           <div className="md:col-span-5">
             <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-              Variable Value (Suffix)
+              Variable Value (Suffix Slug / Query)
             </label>
             <input
               ref={suffixInputRef}
@@ -251,20 +545,87 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Quick Bulk Actions Bar */}
+        <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowBulkModal(true)}
+              className="h-9 px-3.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg transition-colors inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              <ClipboardList className="w-3.5 h-3.5" />
+              <span>Bulk Paste Suffixes (Multi-Line)</span>
+            </button>
+
+            <div className="flex items-center gap-1.5 bg-blue-50 border border-blue-200 rounded-lg p-1">
+              <input
+                type="text"
+                value={airlineSlugTopic}
+                onChange={(e) => setAirlineSlugTopic(e.target.value)}
+                placeholder="missed-flight-policy"
+                className="h-7 px-2.5 bg-white rounded border border-blue-200 text-xs font-mono text-slate-800 w-44 focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={handleGenerateAirlineSlugs}
+                className="h-7 px-3 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+              >
+                <Sparkles className="w-3 h-3" />
+                <span>Auto-Build All {DEFAULT_AIRLINES.length} Airline Links</span>
+              </button>
+            </div>
+          </div>
+
+          {rows.length > 0 && (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleCopyAllLinks}
+                className="h-9 px-3 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 text-xs font-semibold rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
+              >
+                {copiedAllLinks ? (
+                  <>
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Copied All {rows.length} Links!</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Copy All Links</span>
+                  </>
+                )}
+              </button>
+
+              {onSendUrlsToAutomation && (
+                <button
+                  type="button"
+                  onClick={() => onSendUrlsToAutomation(rows.map((r) => r.result))}
+                  className="h-9 px-3 bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-900 text-xs font-semibold rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Send to SEO Bulk Indexer / Checker</span>
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Generated Links List */}
+      {/* 2. Generated Links List with Exact Sheet Cell Badges & Sync Controls */}
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
         <div className="px-5 py-3.5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 bg-slate-50/60">
           <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-            <span>Generated Links</span>
+            <span>Generated Concatenated Links</span>
             <span className="text-slate-400">·</span>
             <span className="font-mono text-xs text-slate-600 tabular-nums">
               {rows.length} total
             </span>
           </div>
-          <div className="flex items-center gap-3 text-xs text-slate-500">
-            <span>Sheet ID: {GOOGLE_SHEET_ID.slice(0, 14)}...</span>
+          <div className="flex items-center gap-2 text-xs font-mono text-slate-600">
+            <span>
+              Destination Range: <strong>{liveRangePreview.fullRange}</strong>
+            </span>
           </div>
         </div>
 
@@ -275,81 +636,95 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
                 No concatenated links generated yet
               </p>
               <p className="text-xs text-slate-500 max-w-md mx-auto">
-                Enter a common prefix and variable suffix above, then press Enter or click Add Row to build your link list.
+                Enter a prefix and suffix above, click <strong>Bulk Paste Suffixes</strong>, or click <strong>Auto-Build All {DEFAULT_AIRLINES.length} Airline Links</strong> to populate your list.
               </p>
             </div>
           ) : (
-            rows.map((row, idx) => (
-              <div
-                key={row.id}
-                className={`fast-scroll-row flex items-center gap-3 px-4 py-2.5 transition-colors ${
-                  row.selected
-                    ? 'bg-blue-50/80'
-                    : idx % 2 === 0
-                    ? 'bg-white'
-                    : 'bg-slate-50/60'
-                } hover:bg-slate-100/80`}
-              >
-                <input
-                  type="checkbox"
-                  checked={row.selected}
-                  onChange={() => toggleSelectRow(row.id)}
-                  className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                />
-                <span className="w-12 text-xs font-mono font-semibold text-slate-600 tabular-nums">
-                  #{row.id}
-                </span>
-                <input
-                  type="text"
-                  readOnly
-                  value={row.result}
-                  className="flex-1 min-w-0 bg-transparent text-xs sm:text-sm font-mono text-slate-800 focus:outline-none truncate"
-                />
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => openEditModal(row)}
-                    className="px-2.5 py-1.5 text-xs font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 rounded-md transition-colors flex items-center gap-1 whitespace-nowrap cursor-pointer"
+            rows.map((row, idx) => {
+              const targetSheetRowNum =
+                Math.max(1, Number(sheetStartRow) || 3) + idx;
+              const targetCellBadge = `${
+                sheetTabName.trim() ? `${sheetTabName.trim()}!` : ''
+              }${sheetColumn}${targetSheetRowNum}`;
+
+              return (
+                <div
+                  key={row.id}
+                  className={`fast-scroll-row flex items-center gap-3 px-4 py-2.5 transition-colors ${
+                    row.selected
+                      ? 'bg-blue-50/80'
+                      : idx % 2 === 0
+                      ? 'bg-white'
+                      : 'bg-slate-50/60'
+                  } hover:bg-slate-100/80`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={row.selected}
+                    onChange={() => toggleSelectRow(row.id)}
+                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  />
+                  <span className="w-10 text-xs font-mono font-semibold text-slate-500 tabular-nums">
+                    #{row.id}
+                  </span>
+                  <span
+                    className="px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-[11px] font-mono font-bold text-blue-700 shrink-0"
+                    title={`This link will be written to cell ${targetCellBadge} in Google Sheets`}
                   >
-                    <Edit3 className="w-3.5 h-3.5" />
-                    <span className="hidden sm:inline">Edit</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleCopy(row.id, row.result)}
-                    className="px-2.5 py-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-md transition-colors flex items-center gap-1 whitespace-nowrap cursor-pointer"
-                  >
-                    {copiedId === row.id ? (
-                      <>
-                        <Check className="w-3.5 h-3.5" />
-                        <span>Copied</span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-3.5 h-3.5" />
-                        <span>Copy</span>
-                      </>
-                    )}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleOpenLink(row.result)}
-                    className="px-2.5 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-md transition-colors flex items-center gap-1 whitespace-nowrap cursor-pointer"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    <span className="hidden sm:inline">Open</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => deleteSingleRow(row.id)}
-                    className="p-1.5 text-slate-400 hover:text-red-600 rounded-md transition-colors cursor-pointer"
-                    title="Delete Row"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                    {targetCellBadge}
+                  </span>
+                  <input
+                    type="text"
+                    readOnly
+                    value={row.result}
+                    className="flex-1 min-w-0 bg-transparent text-xs sm:text-sm font-mono text-slate-800 focus:outline-none truncate"
+                  />
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => openEditModal(row)}
+                      className="px-2.5 py-1.5 text-xs font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 rounded-md transition-colors flex items-center gap-1 whitespace-nowrap cursor-pointer"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">Edit</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleCopy(row.id, row.result)}
+                      className="px-2.5 py-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-md transition-colors flex items-center gap-1 whitespace-nowrap cursor-pointer"
+                    >
+                      {copiedId === row.id ? (
+                        <>
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Copied</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Copy</span>
+                        </>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenLink(row.result)}
+                      className="px-2.5 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-md transition-colors flex items-center gap-1 whitespace-nowrap cursor-pointer"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">Open</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteSingleRow(row.id)}
+                      className="p-1.5 text-slate-400 hover:text-red-600 rounded-md transition-colors cursor-pointer"
+                      title="Delete Row"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
 
@@ -407,7 +782,7 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
                   setAutoSync(e.target.checked);
                   setStatus(
                     e.target.checked
-                      ? 'Auto-sync enabled (every 60s)'
+                      ? `Auto-sync enabled (every 60s → ${liveRangePreview.fullRange})`
                       : 'Auto-sync disabled'
                   );
                 }}
@@ -425,7 +800,11 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
               <RefreshCw
                 className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`}
               />
-              <span>{isSyncing ? 'Syncing...' : 'Sync to Google Sheet'}</span>
+              <span>
+                {isSyncing
+                  ? `Syncing ${liveRangePreview.fullRange}...`
+                  : `Sync to Sheet (${liveRangePreview.fullRange})`}
+              </span>
             </button>
           </div>
         </div>
@@ -433,6 +812,291 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
 
       {/* Status Footer */}
       <p className="text-xs italic text-slate-500 px-1">{status}</p>
+
+      {/* 3. BOTTOM SECTION: Shared Setup — Google Sheet Destination, Tab, Column & Row Mapping */}
+      <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-200">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Table className="w-4 h-4 text-emerald-600" />
+              <h3 className="text-sm sm:text-base font-bold text-slate-900">
+                Shared Setup: Google Sheet Destination &amp; Row / Column Mapping
+              </h3>
+              <span className="px-2.5 py-0.5 rounded-md bg-blue-50 border border-blue-200 text-blue-700 font-mono text-xs font-bold">
+                Target Range: {liveRangePreview.fullRange}
+              </span>
+              {verifiedSheetTitle && (
+                <span className="px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-semibold">
+                  Sheet: &ldquo;{verifiedSheetTitle}&rdquo;
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-slate-600 mt-1">
+              Configure which Google Sheet URL/ID, <strong>Worksheet Tab</strong>, <strong>Column</strong>, and <strong>Starting Row</strong> are updated when you click <strong>Sync to Sheet</strong> above.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              disabled={isCheckingSheet}
+              onClick={handleCheckSheetInfo}
+              className="h-9 px-3 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 text-xs font-semibold rounded-lg transition-colors inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              <RefreshCw
+                className={`w-3.5 h-3.5 ${isCheckingSheet ? 'animate-spin' : ''}`}
+              />
+              <span>{isCheckingSheet ? 'Checking...' : 'Verify Sheet & Load Tabs'}</span>
+            </button>
+
+            <a
+              href={buildGoogleSheetUrl(sheetUrlInput)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="h-9 px-3.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
+            >
+              <span>Open Google Sheet</span>
+              <ExternalLink className="w-3.5 h-3.5" />
+            </a>
+
+            <button
+              type="button"
+              onClick={() => {
+                setSheetUrlInput(DEFAULT_GOOGLE_SHEET_URL);
+                setSheetTabName('SEO');
+                setSheetColumn('B');
+                setSheetStartRow(3);
+                setVerifiedSheetTitle(null);
+                setStatus('Reset Google Sheet settings to default (SEO!B3).');
+              }}
+              className="h-9 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition-colors inline-flex items-center gap-1 cursor-pointer"
+              title="Reset to default Google Sheet"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Reset Default</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Sheet URL + Tab + Column + Start Row Controls */}
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+          <div className="md:col-span-6">
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Google Sheet URL or Spreadsheet ID (Change Anytime)
+            </label>
+            <input
+              type="text"
+              value={sheetUrlInput}
+              onChange={(e) => {
+                setSheetUrlInput(e.target.value);
+                setVerifiedSheetTitle(null);
+              }}
+              placeholder="https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit"
+              className="w-full h-10 px-3 rounded-lg border border-slate-300 text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+            />
+          </div>
+
+          <div className="md:col-span-2">
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Worksheet Tab Name
+            </label>
+            {availableSheetTabs.length > 0 ? (
+              <select
+                value={sheetTabName}
+                onChange={(e) => setSheetTabName(e.target.value)}
+                className="w-full h-10 px-2.5 rounded-lg border border-slate-300 bg-white text-xs font-mono font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+              >
+                {availableSheetTabs.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={sheetTabName}
+                onChange={(e) => setSheetTabName(e.target.value)}
+                placeholder="e.g. SEO or Sheet1"
+                className="w-full h-10 px-3 rounded-lg border border-slate-300 text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+              />
+            )}
+          </div>
+
+          <div className="md:col-span-2">
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Target Column
+            </label>
+            <select
+              value={sheetColumn}
+              onChange={(e) => setSheetColumn(e.target.value)}
+              className="w-full h-10 px-2.5 rounded-lg border border-slate-300 bg-white text-xs font-mono font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+            >
+              {COLUMNS.map((c) => (
+                <option key={c} value={c}>
+                  Column {c}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="md:col-span-2">
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Start Row #
+            </label>
+            <input
+              type="number"
+              min={1}
+              value={sheetStartRow}
+              onChange={(e) =>
+                setSheetStartRow(Math.max(1, Number(e.target.value) || 1))
+              }
+              className="w-full h-10 px-3 rounded-lg border border-slate-300 text-xs font-mono font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+            />
+          </div>
+        </div>
+
+        {/* Live Mapping Summary Bar */}
+        <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-slate-700">
+            <span>
+              <strong>Active Sheet ID:</strong>{' '}
+              <code className="text-slate-900 font-mono">{cleanSheetId}</code>
+            </span>
+            <span>
+              <strong>Updating Cells:</strong>{' '}
+              <code className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-900 font-bold font-mono">
+                {liveRangePreview.fullRange}
+              </code>{' '}
+              (Column <strong>{liveRangePreview.colDisplay}</strong>, Row{' '}
+              <strong>{liveRangePreview.startRow}</strong> to Row{' '}
+              <strong>{liveRangePreview.endRow}</strong>)
+            </span>
+            <label className="inline-flex items-center gap-1.5 cursor-pointer select-none font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={includePrefixSuffixCols}
+                onChange={(e) => setIncludePrefixSuffixCols(e.target.checked)}
+                className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600"
+              />
+              <span>Also write Prefix &amp; Suffix in adjacent columns</span>
+            </label>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-slate-500">
+              If changing sheet, share Editor access with:
+            </span>
+            <code className="px-2 py-0.5 bg-white border border-slate-200 rounded text-[11px] font-mono text-slate-800">
+              {credentials.client_email}
+            </code>
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(credentials.client_email);
+                  setCopiedServiceEmail(true);
+                  setTimeout(() => setCopiedServiceEmail(false), 1800);
+                } catch {
+                  // ignore
+                }
+              }}
+              className="px-2 py-1 bg-white border border-slate-300 hover:bg-slate-100 rounded text-[11px] font-semibold text-blue-700 inline-flex items-center gap-1 cursor-pointer"
+            >
+              {copiedServiceEmail ? (
+                <>
+                  <Check className="w-3 h-3 text-emerald-600" />
+                  <span>Copied</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3 h-3" />
+                  <span>Copy Email</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Last Sync Receipt Banner */}
+        {lastSyncReceipt && (
+          <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 flex flex-wrap items-center justify-between gap-2 text-xs text-emerald-900">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>
+                <strong>Last Sync Confirmed ({lastSyncReceipt.timestamp}):</strong>{' '}
+                Updated <strong>{lastSyncReceipt.syncedCount} rows</strong> in{' '}
+                <strong>&ldquo;{lastSyncReceipt.spreadsheetTitle}&rdquo;</strong> &rarr; Range{' '}
+                <code className="px-1.5 py-0.5 bg-emerald-100 rounded font-bold font-mono">
+                  {lastSyncReceipt.updatedRange}
+                </code>{' '}
+                (Column {lastSyncReceipt.column}, Rows {lastSyncReceipt.startRow}–
+                {lastSyncReceipt.endRow})
+              </span>
+            </div>
+            <a
+              href={lastSyncReceipt.sheetUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-bold text-emerald-800 hover:underline inline-flex items-center gap-1"
+            >
+              <span>View Updated Rows in Sheet</span>
+              <ExternalLink className="w-3 h-3" />
+            </a>
+          </div>
+        )}
+      </div>
+
+      {/* Bulk Paste Suffixes Modal */}
+      {showBulkModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-xl max-w-lg w-full p-5 shadow-xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">
+                  Bulk Paste Suffixes (1 Per Line)
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Each line will be concatenated with prefix:{' '}
+                  <code className="font-mono text-blue-700">{prefix}</code>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBulkModal(false)}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <textarea
+              rows={8}
+              value={bulkSuffixText}
+              onChange={(e) => setBulkSuffixText(e.target.value)}
+              placeholder={`/delta-missed-flight.pdf\n/united-missed-flight.pdf\n/qatar-missed-flight.pdf`}
+              className="w-full p-3 rounded-lg border border-slate-300 text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+            />
+
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowBulkModal(false)}
+                className="px-3.5 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleBulkAddSuffixes}
+                className="px-4 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg cursor-pointer"
+              >
+                Add All Rows
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Edit Row Modal */}
       {editingRow && (
