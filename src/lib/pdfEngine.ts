@@ -389,15 +389,15 @@ async function renderDocxToPdfViaDom(docxBytes: Uint8Array): Promise<Uint8Array 
   container.style.color = '#0f172a';
   container.style.fontFamily =
     "'Calibri', 'Segoe UI', 'Roboto', 'Arial', 'Helvetica Neue', 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif";
-  container.style.zIndex = '-1000';
-  container.style.opacity = '0';
+  container.style.zIndex = '-9999';
+  container.style.opacity = '1';
   container.style.pointerEvents = 'none';
 
   // Inject scoped style to eliminate extra outer whitespace and ensure pure white background
   const styleEl = document.createElement('style');
   styleEl.textContent = `
     .seo-docx-render-stage .docx-wrapper {
-      background: transparent !important;
+      background: #ffffff !important;
       padding: 0 !important;
       margin: 0 !important;
     }
@@ -428,8 +428,15 @@ async function renderDocxToPdfViaDom(docxBytes: Uint8Array): Promise<Uint8Array 
       breakPages: true,
     });
 
-    // Wait a brief tick for fonts and emoji layouts to paint
-    await new Promise((r) => setTimeout(r, 60));
+    // Wait for document fonts and emoji layouts to paint
+    if (typeof document !== 'undefined' && 'fonts' in document && document.fonts?.ready) {
+      try {
+        await document.fonts.ready;
+      } catch {
+        // ignore font readiness error
+      }
+    }
+    await new Promise((r) => setTimeout(r, 100));
 
     // Find all rendered page sections
     let pageElements = Array.from(
@@ -457,15 +464,17 @@ async function renderDocxToPdfViaDom(docxBytes: Uint8Array): Promise<Uint8Array 
     for (let i = 0; i < pageElements.length; i++) {
       const pageEl = pageElements[i];
       // Compute page dimensions in pt (96 px = 72 pt)
-      const widthPx = pageEl.offsetWidth || 816;
-      const heightPx = pageEl.offsetHeight || 1056;
+      const widthPx = Math.ceil(pageEl.offsetWidth || pageEl.getBoundingClientRect().width || 816);
+      const heightPx = Math.ceil(pageEl.offsetHeight || pageEl.getBoundingClientRect().height || 1056);
       const widthPt = Math.round((widthPx * 72) / 96);
       const heightPt = Math.round((heightPx * 72) / 96);
 
       // Render high-resolution crisp image (pixelRatio: 2)
       const imgDataUrl = await toJpeg(pageEl, {
-        quality: 0.96,
+        quality: 0.98,
         pixelRatio: 2,
+        width: widthPx,
+        height: heightPx,
         backgroundColor: '#ffffff',
         cacheBust: true,
       });

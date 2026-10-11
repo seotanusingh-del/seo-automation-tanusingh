@@ -326,7 +326,13 @@ export const RankCheckerPanel: React.FC = () => {
       // ignore
     }
     linksData.slice(0, 10).forEach(({ url }) => {
-      window.open(url, '_blank', 'noopener,noreferrer');
+      const a = document.createElement('a');
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
     });
     addLog(
       `Opened batch of ${Math.min(10, linksData.length)} Page-1 queries with TFN (${tfn}) highlight.`

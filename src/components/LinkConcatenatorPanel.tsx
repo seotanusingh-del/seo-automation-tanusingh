@@ -391,7 +391,13 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
 
   const handleOpenLink = (url: string) => {
     const targetUrl = /^https?:\/\//i.test(url) ? url : `https://${url}`;
-    window.open(targetUrl, '_blank', 'noopener,noreferrer');
+    const a = document.createElement('a');
+    a.href = targetUrl;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
     setStatus(`Opened: ${targetUrl.slice(0, 60)}`);
   };
 
