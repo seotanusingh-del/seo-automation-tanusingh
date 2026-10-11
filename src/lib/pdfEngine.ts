@@ -384,7 +384,8 @@ async function renderDocxToPdfViaDom(docxBytes: Uint8Array): Promise<Uint8Array 
   container.style.position = 'fixed';
   container.style.left = '-9999px';
   container.style.top = '0';
-  container.style.width = '816px'; // standard 8.5 inch page width at 96 DPI
+  container.style.width = 'max-content';
+  container.style.minWidth = '816px';
   container.style.background = '#ffffff';
   container.style.color = '#0f172a';
   container.style.fontFamily =
@@ -400,6 +401,8 @@ async function renderDocxToPdfViaDom(docxBytes: Uint8Array): Promise<Uint8Array 
       background: #ffffff !important;
       padding: 0 !important;
       margin: 0 !important;
+      width: max-content !important;
+      min-width: 816px !important;
     }
     .seo-docx-render-stage .docx-wrapper > section.docx,
     .seo-docx-render-stage section.docx,
@@ -757,7 +760,12 @@ function renderBlocksToVectorPdf(
         doc.setFontSize(tok.fontSizePt);
         doc.setTextColor(tok.color[0], tok.color[1], tok.color[2]);
 
-        doc.text(item.text, drawX, cursorY + tok.fontSizePt);
+        try {
+          doc.text(item.text, drawX, cursorY + tok.fontSizePt);
+        } catch {
+          const safeText = item.text.replace(/[^\x00-\xFF]/g, ' ');
+          doc.text(safeText, drawX, cursorY + tok.fontSizePt);
+        }
 
         if (tok.underline) {
           doc.setDrawColor(tok.color[0], tok.color[1], tok.color[2]);

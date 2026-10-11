@@ -20,6 +20,7 @@ export const AirlineContentGeneratorPanel: React.FC = () => {
   const [rowCounter, setRowCounter] = useState(1);
   const [filterQuery, setFilterQuery] = useState('');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [copiedAllFlash, setCopiedAllFlash] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [addedFlash, setAddedFlash] = useState(false);
   const [status, setStatus] = useState(
@@ -85,6 +86,24 @@ export const AirlineContentGeneratorPanel: React.FC = () => {
       setTimeout(() => setCopiedKey(null), 1600);
     } catch {
       setStatus('Failed to copy to clipboard.');
+    }
+  };
+
+  const handleCopyAll = async () => {
+    if (pages.length === 0) return;
+    try {
+      const allText = pages
+        .map(
+          (p) =>
+            `### #${p.id} ${p.airline}\n**${p.header}**\n${p.paragraph}\n`
+        )
+        .join('\n---\n\n');
+      await navigator.clipboard.writeText(allText);
+      setCopiedAllFlash(true);
+      setStatus(`Copied all ${pages.length} airline pages to clipboard!`);
+      setTimeout(() => setCopiedAllFlash(false), 2000);
+    } catch {
+      setStatus('Failed to copy all content.');
     }
   };
 
@@ -204,14 +223,34 @@ export const AirlineContentGeneratorPanel: React.FC = () => {
               />
             </div>
             {pages.length > 0 && (
-              <button
-                type="button"
-                onClick={clearAll}
-                className="h-8 px-3 text-xs font-medium text-red-700 bg-white border border-red-200 hover:bg-red-50 rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Clear All</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={handleCopyAll}
+                  className="h-8 px-3 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                  title="Copy all generated airline headers & paragraphs"
+                >
+                  {copiedAllFlash ? (
+                    <>
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Copied All ({pages.length})</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>Copy All ({pages.length})</span>
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={clearAll}
+                  className="h-8 px-3 text-xs font-medium text-red-700 bg-white border border-red-200 hover:bg-red-50 rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Clear All</span>
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -232,7 +271,7 @@ export const AirlineContentGeneratorPanel: React.FC = () => {
             filteredPages.map((row, idx) => (
               <div
                 key={row.id}
-                className={`fast-scroll-card-row p-3.5 flex flex-col md:flex-row md:items-center gap-3 transition-colors ${
+                className={`fast-scroll-card-row animate-fade-in p-3.5 flex flex-col md:flex-row md:items-center gap-3 transition-colors ${
                   idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/60'
                 } hover:bg-slate-100/70`}
               >

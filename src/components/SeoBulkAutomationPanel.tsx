@@ -15,6 +15,7 @@ import {
   Layers,
   Terminal,
   Sliders,
+  Loader2,
 } from 'lucide-react';
 import { DEFAULT_AIRLINES } from '../lib/seoHelpers';
 
@@ -933,6 +934,23 @@ export const SeoBulkAutomationPanel: React.FC<SeoBulkAutomationPanelProps> = ({
               className="w-full p-3 rounded-lg border border-slate-300 text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
             />
           </div>
+
+          {/* Loading Skeleton during URL Check */}
+          {isCheckingUrls && (
+            <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-3 animate-fade-in">
+              <div className="flex items-center gap-2 text-xs font-bold text-slate-700">
+                <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />
+                <span>
+                  Auditing HTTP Status, Googlebot headers &amp; TFN matches across {parsedUrls.length} URL(s)...
+                </span>
+              </div>
+              <div className="space-y-2">
+                {[1, 2, 3].map((n) => (
+                  <div key={n} className="h-12 rounded-lg skeleton-shimmer w-full" />
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Live URL Audit Results */}
           {urlCheckResults.length > 0 && (

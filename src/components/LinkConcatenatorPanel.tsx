@@ -16,6 +16,7 @@ import {
   ClipboardList,
   CheckCircle2,
   RotateCcw,
+  Loader2,
 } from 'lucide-react';
 import {
   ServiceAccountCredentials,
@@ -579,9 +580,17 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
               Enter your Common Value (Prefix) and Variable Value (Suffix) below to concatenate links immediately.
             </p>
           </div>
-          <span className="px-2.5 py-1 rounded-md bg-blue-50 border border-blue-200 text-blue-700 font-mono text-xs font-bold">
-            Sheet Target: {liveRangePreview.fullRange}
-          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            {isSyncing && (
+              <span className="px-2.5 py-1 rounded-md bg-blue-50 border border-blue-200 text-blue-700 font-medium text-xs flex items-center gap-1.5 animate-fade-in">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Syncing Sheet...</span>
+              </span>
+            )}
+            <span className="px-2.5 py-1 rounded-md bg-blue-50 border border-blue-200 text-blue-700 font-mono text-xs font-bold">
+              Sheet Target: {liveRangePreview.fullRange}
+            </span>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">

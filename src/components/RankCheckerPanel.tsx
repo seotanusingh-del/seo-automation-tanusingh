@@ -516,6 +516,31 @@ export const RankCheckerPanel: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {/* Live Bulk TFN Search Progress Indicator */}
+        {isBulkSearching && bulkProgress && (
+          <div className="mt-4 p-4 rounded-xl bg-blue-50 border border-blue-200 animate-fade-in space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-bold text-blue-900 flex items-center gap-2">
+                <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />
+                <span>
+                  Scanning SERP Page 1 ({bulkProgress.current} of {bulkProgress.total} airlines)...
+                </span>
+              </span>
+              <span className="font-mono font-semibold text-blue-700">
+                {Math.round((bulkProgress.current / bulkProgress.total) * 100)}%
+              </span>
+            </div>
+            <div className="w-full bg-blue-100 rounded-full h-2.5 overflow-hidden">
+              <div
+                className="bg-blue-600 h-2.5 rounded-full skeleton-shimmer transition-all duration-300"
+                style={{
+                  width: `${(bulkProgress.current / bulkProgress.total) * 100}%`,
+                }}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Scrollable Results List */}

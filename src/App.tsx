@@ -109,8 +109,10 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 }
 
 export default function App() {
-  // Always start unauthenticated on tab open, refresh, or re-open so the session is immediately locked
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  // Retain authenticated session across page refreshes during the active browser session
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    return Boolean(sessionStorage.getItem('seo_studio_auth_session'));
+  });
   const [hasSavedWorkspace] = useState<boolean>(() => {
     return Boolean(
       localStorage.getItem('seo_last_active_tab') ||
@@ -275,6 +277,11 @@ export default function App() {
 
   // Generation & Sync State
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState<{
+    current: number;
+    total: number;
+    airline: string;
+  } | null>(null);
   const [isSyncingDoc, setIsSyncingDoc] = useState(false);
   const [globalActionNotice, setGlobalActionNotice] = useState<string | null>(null);
   const [syncedDocFlash, setSyncedDocFlash] = useState(false);
@@ -777,7 +784,17 @@ export default function App() {
     try {
       const builtItems: GeneratedFileItem[] = [];
 
-      for (const airline of activeSelectedAirlines) {
+      for (let i = 0; i < activeSelectedAirlines.length; i++) {
+        const airline = activeSelectedAirlines[i];
+        setGenerationProgress({
+          current: i + 1,
+          total: activeSelectedAirlines.length,
+          airline,
+        });
+        setStatusMessage(
+          `Generating replica PDF (${i + 1}/${activeSelectedAirlines.length}): ${airline}...`
+        );
+
         const outName = buildOutputName(airline);
         let docxBytes: Uint8Array;
         let pdfBytes: Uint8Array;
@@ -800,7 +817,9 @@ export default function App() {
             detectedAirlines,
             wbStyle
           );
-          pdfBytes = createPdfFromWhiteboard(
+          // Use DOM replica converter for exact emoji, font, color, and layout fidelity
+          const replicaPdf = await convertDocxBytesToPdfBytes(docxBytes);
+          pdfBytes = replicaPdf || createPdfFromWhiteboard(
             whiteboardText,
             airline,
             effectiveOldTfn,
@@ -857,6 +876,7 @@ export default function App() {
         `Generation Failed: ${err instanceof Error ? err.message : String(err)}`
       );
     } finally {
+      setGenerationProgress(null);
       setIsGenerating(false);
     }
   };
@@ -2038,6 +2058,45 @@ export default function App() {
               )}
             </section>
 
+            {/* Live Generation Animated Progress Card & Loader */}
+            {isGenerating && generationProgress && (
+              <div className="bg-white border-2 border-blue-500/80 rounded-xl p-5 shadow-md animate-fade-in space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    </div>
+                    <div>
+                      <h3 className="text-xs sm:text-sm font-bold text-slate-900">
+                        Generating Replica PDF {generationProgress.current} of {generationProgress.total}
+                      </h3>
+                      <p className="text-[11px] text-blue-700 font-semibold truncate">
+                        Current Airline: <span className="underline decoration-blue-400">{generationProgress.airline}</span>
+                      </p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-base font-extrabold font-mono text-blue-700 tabular-nums">
+                      {Math.round((generationProgress.current / generationProgress.total) * 100)}%
+                    </span>
+                    <span className="text-[10px] text-slate-500 block">Preserving Fonts &amp; Emojis</span>
+                  </div>
+                </div>
+
+                <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden p-0.5 border border-slate-200">
+                  <div
+                    className="bg-blue-600 h-full rounded-full transition-all duration-300 skeleton-shimmer"
+                    style={{
+                      width: `${Math.max(
+                        8,
+                        (generationProgress.current / generationProgress.total) * 100
+                      )}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
             {/* Generated Outputs Table */}
             {generatedFiles.length > 0 && (
               <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
@@ -2539,6 +2598,37 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Mobile Sticky Bottom Navigation Bar (Immediate 1-tap tab switching) */}
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200 px-1 py-1 flex items-center justify-around shadow-lg">
+        {navItems.map((item) => {
+          const IconComponent = item.icon;
+          const isActive = activeTab === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => handleSelectTab(item.id)}
+              className={`flex flex-col items-center justify-center flex-1 py-1 px-0.5 rounded-xl transition-all cursor-pointer ${
+                isActive
+                  ? 'text-blue-600 font-bold'
+                  : 'text-slate-500 hover:text-slate-800 font-medium'
+              }`}
+            >
+              <div
+                className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
+                  isActive ? 'bg-blue-100 text-blue-700 shadow-xs' : 'text-slate-500'
+                }`}
+              >
+                <IconComponent className="w-4 h-4" />
+              </div>
+              <span className="text-[10px] tracking-tight leading-tight mt-0.5 truncate max-w-[54px]">
+                {item.shortLabel || item.label}
+              </span>
+            </button>
+          );
+        })}
+      </nav>
     </div>
   );
 }

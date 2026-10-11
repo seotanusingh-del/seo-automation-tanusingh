@@ -12,6 +12,7 @@ import {
   Linkedin,
   Mail,
   Instagram,
+  Loader2,
 } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 
@@ -155,7 +156,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   return (
     <div className="min-h-screen bg-[#f8fafc] flex flex-col justify-center items-center px-4 py-10 pb-24 relative">
       {/* Centered Login Card */}
-      <div className="w-full max-w-[420px] bg-white border border-slate-200/90 rounded-2xl shadow-xs p-7 sm:p-8">
+      <div className="w-full max-w-[420px] bg-white border border-slate-200/90 rounded-2xl shadow-xs p-7 sm:p-8 animate-scale-up">
         <div className="flex flex-col items-center text-center mb-6">
           <div className="w-12 h-12 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center mb-4">
             <ShieldCheck className="w-6 h-6 text-blue-600" />
@@ -227,9 +228,16 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           <button
             type="submit"
             disabled={isSubmitting}
-            className="w-full h-11 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition-colors cursor-pointer mt-2"
+            className="w-full h-11 bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition-all flex items-center justify-center gap-2 cursor-pointer mt-2 shadow-xs"
           >
-            {isSubmitting ? 'Signing In...' : 'Sign In'}
+            {isSubmitting ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Verifying Credentials...</span>
+              </>
+            ) : (
+              'Sign In'
+            )}
           </button>
         </form>
 
@@ -361,9 +369,16 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 <button
                   type="submit"
                   disabled={isVerifyingOtp}
-                  className="flex-1 h-10 px-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer"
+                  className="flex-1 h-10 px-4 bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
                 >
-                  {isVerifyingOtp ? 'Verifying...' : 'Verify & Unlock'}
+                  {isVerifyingOtp ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Verifying...</span>
+                    </>
+                  ) : (
+                    'Verify & Unlock'
+                  )}
                 </button>
               </div>
             </form>
