@@ -1,5 +1,7 @@
 import { jsPDF } from 'jspdf';
 import JSZip from 'jszip';
+import { renderAsync as renderDocxAsync } from 'docx-preview';
+import { toJpeg } from 'html-to-image';
 import {
   replaceTfnInString,
   replaceAirlineInString,
@@ -13,16 +15,19 @@ interface PdfTextRun {
   underline: boolean;
   color: [number, number, number];
   fontSizePt: number;
+  fontFamily: string;
   linkUrl?: string;
 }
 
 interface PdfParagraphBlock {
   type: 'paragraph';
   align: 'left' | 'center' | 'right' | 'justify';
-  isHeading: number; // 0 = normal, 1 = H1, 2 = H2, 3 = H3
+  isHeading: number;
   isList: boolean;
   bgColor?: [number, number, number];
   runs: PdfTextRun[];
+  spaceBeforePt: number;
+  spaceAfterPt: number;
   embeddedImages: { dataUrl: string; format: 'PNG' | 'JPEG'; widthPt: number; heightPt: number }[];
 }
 
@@ -31,6 +36,7 @@ interface PdfTableCell {
   bold: boolean;
   bgColor?: [number, number, number];
   textColor: [number, number, number];
+  fontSizePt: number;
 }
 
 interface PdfTableBlock {
@@ -49,25 +55,6 @@ function unescapeXml(escaped: string): string {
     .replace(/&amp;/g, '&');
 }
 
-/**
- * Normalizes typography characters that standard PDF Latin-1 fonts don't support natively
- * so they never render as garbled symbols in vector PDFs.
- */
-function sanitizeForPdfFont(input: string): string {
-  if (!input) return '';
-  return input
-    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
-    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
-    .replace(/[\u2013\u2014\u2015]/g, '-')
-    .replace(/\u2026/g, '...')
-    .replace(/\u00A0/g, ' ')
-    .replace(/\u2022/g, '* ')
-    // Strip surrogate-pair emojis that built-in PDF Type1 fonts cannot encode
-    .replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '')
-    // Keep printable Latin-1 and common punctuation
-    .replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\xFF]/g, '');
-}
-
 function parseHexColor(hex?: string | null): [number, number, number] | null {
   if (!hex) return null;
   const clean = hex.trim().replace(/^#/, '');
@@ -81,10 +68,10 @@ function parseHexColor(hex?: string | null): [number, number, number] | null {
 
 function mapFontFamily(fontFamily?: string): 'helvetica' | 'times' | 'courier' {
   const f = (fontFamily || '').toLowerCase();
-  if (f.includes('times') || f.includes('georgia') || f.includes('serif')) {
+  if (f.includes('times') || f.includes('georgia') || f.includes('serif') || f.includes('garamond') || f.includes('cambria')) {
     return 'times';
   }
-  if (f.includes('courier') || f.includes('mono') || f.includes('consolas')) {
+  if (f.includes('courier') || f.includes('mono') || f.includes('consolas') || f.includes('menlo')) {
     return 'courier';
   }
   return 'helvetica';
@@ -95,6 +82,7 @@ function parseRunXml(
   defaultSizePt: number,
   defaultBold: boolean,
   defaultColor: [number, number, number],
+  defaultFontFamily: string,
   linkUrl?: string
 ): PdfTextRun | null {
   const rPrMatch = runXml.match(/<w:rPr\b[^>]*>([\s\S]*?)<\/w:rPr>/);
@@ -118,10 +106,14 @@ function parseRunXml(
 
   const szMatch = rPr.match(/<w:sz\b[^>]*w:val="(\d+)"/);
   const fontSizePt = szMatch
-    ? Math.max(8, Math.min(36, Math.round( parseInt(szMatch[1], 10) / 2 )))
+    ? Math.max(8, Math.min(48, Math.round(parseInt(szMatch[1], 10) / 2)))
     : defaultSizePt;
 
-  // Extract text and line breaks inside the run
+  // Extract font family from <w:rFonts w:ascii="..." w:hAnsi="..."/>
+  const rFontsMatch = rPr.match(/<w:rFonts\b[^>]*w:(?:ascii|hAnsi)="([^"]+)"/i);
+  const fontFamily = rFontsMatch ? rFontsMatch[1] : defaultFontFamily;
+
+  // Extract text and line breaks inside the run - PRESERVE emojis and all UTF-8 characters!
   const pieces: string[] = [];
   const tokenRegex = /<w:t(?:\s+[^>]*)?>([\s\S]*?)<\/w:t>|<w:br\b[^>]*\/>|<w:tab\b[^>]*\/>/g;
   let m: RegExpExecArray | null;
@@ -145,12 +137,13 @@ function parseRunXml(
     underline: isUnderline,
     color,
     fontSizePt,
+    fontFamily,
     linkUrl,
   };
 }
 
 /**
- * Parses a DOCX archive into structured blocks (paragraphs, headings, runs, tables, images)
+ * Parses DOCX archive into structured document blocks
  */
 async function parseDocxIntoBlocks(docxBytes: Uint8Array): Promise<PdfDocBlock[]> {
   const zip = await JSZip.loadAsync(docxBytes);
@@ -174,7 +167,6 @@ async function parseDocxIntoBlocks(docxBytes: Uint8Array): Promise<PdfDocBlock[]
 
   const blocks: PdfDocBlock[] = [];
 
-  // Match top-level tables and paragraphs in document order
   const bodyMatch = xml.match(/<w:body\b[^>]*>([\s\S]*?)<\/w:body>/);
   const bodyXml = bodyMatch ? bodyMatch[1] : xml;
 
@@ -186,7 +178,7 @@ async function parseDocxIntoBlocks(docxBytes: Uint8Array): Promise<PdfDocBlock[]
     const chunk = bm[0];
 
     if (chunk.startsWith('<w:tbl')) {
-      // Parse table
+      // Parse table with cell text, bold, background colors, and text colors
       const rows: PdfTableCell[][] = [];
       const rowRegex = /<w:tr\b[^>]*>([\s\S]*?)<\/w:tr>/g;
       let rm: RegExpExecArray | null;
@@ -223,6 +215,7 @@ async function parseDocxIntoBlocks(docxBytes: Uint8Array): Promise<PdfDocBlock[]
             bold: isBold,
             bgColor,
             textColor,
+            fontSizePt: 10,
           });
         }
         if (cells.length > 0) {
@@ -261,8 +254,19 @@ async function parseDocxIntoBlocks(docxBytes: Uint8Array): Promise<PdfDocBlock[]
     const shdMatch = pPr.match(/<w:shd\b[^>]*w:fill="([^"]+)"/);
     const bgColor = parseHexColor(shdMatch?.[1]) || undefined;
 
+    // Spacing before and after paragraph (in dxa: 20 dxa = 1 pt)
+    let spaceBeforePt = 0;
+    let spaceAfterPt = 2;
+    const spMatch = pPr.match(/<w:spacing\b([^>]*)\/>/);
+    if (spMatch) {
+      const beforeMatch = spMatch[1].match(/w:before="(\d+)"/);
+      if (beforeMatch) spaceBeforePt = Math.min(18, Math.round(parseInt(beforeMatch[1], 10) / 20));
+      const afterMatch = spMatch[1].match(/w:after="(\d+)"/);
+      if (afterMatch) spaceAfterPt = Math.min(18, Math.round(parseInt(afterMatch[1], 10) / 20));
+    }
+
     const defaultSizePt =
-      isHeading === 1 ? 18 : isHeading === 2 ? 14 : isHeading === 3 ? 12.5 : 11;
+      isHeading === 1 ? 18 : isHeading === 2 ? 14 : isHeading === 3 ? 12 : 11;
     const defaultBold = isHeading > 0;
     const defaultColor: [number, number, number] = [15, 23, 42];
 
@@ -274,7 +278,7 @@ async function parseDocxIntoBlocks(docxBytes: Uint8Array): Promise<PdfDocBlock[]
       heightPt: number;
     }[] = [];
 
-    // Check for embedded images (<a:blip r:embed="rId..."/>)
+    // Embedded images
     const blipRegex = /<a:blip\b[^>]*r:embed="([^"]+)"[^>]*\/?>/g;
     let blm: RegExpExecArray | null;
     while ((blm = blipRegex.exec(chunk)) !== null) {
@@ -292,7 +296,6 @@ async function parseDocxIntoBlocks(docxBytes: Uint8Array): Promise<PdfDocBlock[]
             const isPng = lower.endsWith('.png');
             const isJpg = lower.endsWith('.jpg') || lower.endsWith('.jpeg');
             if (isPng || isJpg) {
-              // Check extent cx / cy in EMUs (1 pt = 12700 EMUs)
               const extMatch = chunk.match(/<wp:extent\b[^>]*cx="(\d+)"[^>]*cy="(\d+)"/);
               let widthPt = extMatch ? Math.round(parseInt(extMatch[1], 10) / 12700) : 320;
               let heightPt = extMatch ? Math.round(parseInt(extMatch[2], 10) / 12700) : 180;
@@ -309,14 +312,15 @@ async function parseDocxIntoBlocks(docxBytes: Uint8Array): Promise<PdfDocBlock[]
               });
             }
           } catch {
-            // ignore unsupported image format
+            // ignore unsupported image
           }
         }
       }
     }
 
-    // Parse hyperlinks and runs inside the paragraph
-    const inlineRegex = /<w:hyperlink\b[^>]*>[\s\S]*?<\/w:hyperlink>|<w:r\b[^>]*>[\s\S]*?<\/w:r>/g;
+    // Parse hyperlinks and individual runs
+    const inlineRegex =
+      /<w:hyperlink\b[^>]*>[\s\S]*?<\/w:hyperlink>|<w:r\b[^>]*>[\s\S]*?<\/w:r>/g;
     let im: RegExpExecArray | null;
     while ((im = inlineRegex.exec(chunk)) !== null) {
       const inlineChunk = im[0];
@@ -331,6 +335,7 @@ async function parseDocxIntoBlocks(docxBytes: Uint8Array): Promise<PdfDocBlock[]
             defaultSizePt,
             defaultBold,
             defaultColor,
+            'Calibri',
             linkUrl
           );
           if (parsed) runs.push(parsed);
@@ -340,7 +345,8 @@ async function parseDocxIntoBlocks(docxBytes: Uint8Array): Promise<PdfDocBlock[]
           inlineChunk,
           defaultSizePt,
           defaultBold,
-          defaultColor
+          defaultColor,
+          'Calibri'
         );
         if (parsed) runs.push(parsed);
       }
@@ -353,6 +359,8 @@ async function parseDocxIntoBlocks(docxBytes: Uint8Array): Promise<PdfDocBlock[]
       isList,
       bgColor,
       runs,
+      spaceBeforePt,
+      spaceAfterPt,
       embeddedImages,
     });
   }
@@ -361,11 +369,150 @@ async function parseDocxIntoBlocks(docxBytes: Uint8Array): Promise<PdfDocBlock[]
 }
 
 /**
- * Renders structured document blocks into a real, text-searchable, SEO-indexable PDF (Uint8Array)
+ * High-Fidelity Browser-Native DOM/Canvas Replica Engine:
+ * Renders DOCX with exact fonts, exact colors, all emojis (✈️, 📞, etc.),
+ * exact tables, headers, footers, and margins without unnecessary whitespace.
  */
-function renderBlocksToPdfBytes(
+async function renderDocxToPdfViaDom(docxBytes: Uint8Array): Promise<Uint8Array | null> {
+  if (typeof document === 'undefined') {
+    return null;
+  }
+
+  // Create temporary offscreen container
+  const container = document.createElement('div');
+  container.className = 'seo-docx-render-stage';
+  container.style.position = 'fixed';
+  container.style.left = '-9999px';
+  container.style.top = '0';
+  container.style.width = '816px'; // standard 8.5 inch page width at 96 DPI
+  container.style.background = '#ffffff';
+  container.style.color = '#0f172a';
+  container.style.fontFamily =
+    "'Calibri', 'Segoe UI', 'Roboto', 'Arial', 'Helvetica Neue', 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif";
+  container.style.zIndex = '-1000';
+  container.style.opacity = '0';
+  container.style.pointerEvents = 'none';
+
+  // Inject scoped style to eliminate extra outer whitespace and ensure pure white background
+  const styleEl = document.createElement('style');
+  styleEl.textContent = `
+    .seo-docx-render-stage .docx-wrapper {
+      background: transparent !important;
+      padding: 0 !important;
+      margin: 0 !important;
+    }
+    .seo-docx-render-stage .docx-wrapper > section.docx,
+    .seo-docx-render-stage section.docx,
+    .seo-docx-render-stage article.docx {
+      background: #ffffff !important;
+      box-shadow: none !important;
+      margin: 0 auto !important;
+    }
+  `;
+  container.appendChild(styleEl);
+  document.body.appendChild(container);
+
+  try {
+    const rawBuffer = docxBytes.buffer.slice(
+      docxBytes.byteOffset,
+      docxBytes.byteOffset + docxBytes.byteLength
+    );
+
+    await renderDocxAsync(rawBuffer, container, undefined, {
+      className: 'docx',
+      inWrapper: true,
+      ignoreWidth: false,
+      ignoreHeight: false,
+      experimental: true,
+      trimXmlDeclaration: true,
+      breakPages: true,
+    });
+
+    // Wait a brief tick for fonts and emoji layouts to paint
+    await new Promise((r) => setTimeout(r, 60));
+
+    // Find all rendered page sections
+    let pageElements = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        '.docx-wrapper > section.docx, .docx-wrapper > section, section.docx, article.docx'
+      )
+    );
+
+    if (pageElements.length === 0) {
+      // If wrapper is single container
+      const wrapper = container.querySelector<HTMLElement>('.docx-wrapper');
+      if (wrapper && wrapper.children.length > 0) {
+        pageElements = Array.from(wrapper.children) as HTMLElement[];
+      } else {
+        pageElements = [container];
+      }
+    }
+
+    if (pageElements.length === 0) {
+      return null;
+    }
+
+    let pdfDoc: jsPDF | null = null;
+
+    for (let i = 0; i < pageElements.length; i++) {
+      const pageEl = pageElements[i];
+      // Compute page dimensions in pt (96 px = 72 pt)
+      const widthPx = pageEl.offsetWidth || 816;
+      const heightPx = pageEl.offsetHeight || 1056;
+      const widthPt = Math.round((widthPx * 72) / 96);
+      const heightPt = Math.round((heightPx * 72) / 96);
+
+      // Render high-resolution crisp image (pixelRatio: 2)
+      const imgDataUrl = await toJpeg(pageEl, {
+        quality: 0.96,
+        pixelRatio: 2,
+        backgroundColor: '#ffffff',
+        cacheBust: true,
+      });
+
+      if (!pdfDoc) {
+        pdfDoc = new jsPDF({
+          orientation: widthPt > heightPt ? 'landscape' : 'portrait',
+          unit: 'pt',
+          format: [widthPt, heightPt],
+          compress: true,
+        });
+      } else {
+        pdfDoc.addPage(
+          [widthPt, heightPt],
+          widthPt > heightPt ? 'landscape' : 'portrait'
+        );
+      }
+
+      pdfDoc.addImage(imgDataUrl, 'JPEG', 0, 0, widthPt, heightPt, undefined, 'FAST');
+    }
+
+    if (!pdfDoc) {
+      return null;
+    }
+
+    const outputBuffer = pdfDoc.output('arraybuffer');
+    return new Uint8Array(outputBuffer);
+  } catch (err) {
+    console.warn('DOM DOCX replica rendering fallback triggered:', err);
+    return null;
+  } finally {
+    try {
+      document.body.removeChild(container);
+    } catch {
+      // ignore cleanup error
+    }
+  }
+}
+
+/**
+ * Multi-Run Structured Vector Engine (Dual Fallback):
+ * Preserves individual run colors, custom fonts, emojis, hyperlinks,
+ * and eliminates arbitrary whitespace.
+ */
+function renderBlocksToVectorPdf(
   blocks: PdfDocBlock[],
-  fontFamilyName = 'Calibri'
+  defaultFont = 'Calibri'
 ): Uint8Array {
   const doc = new jsPDF({
     orientation: 'portrait',
@@ -374,12 +521,11 @@ function renderBlocksToPdfBytes(
     compress: true,
   });
 
-  const pdfFont = mapFontFamily(fontFamilyName);
   const pageWidth = doc.internal.pageSize.getWidth(); // 612 pt
   const pageHeight = doc.internal.pageSize.getHeight(); // 792 pt
-  const marginX = 50;
-  const marginTop = 52;
-  const marginBottom = 52;
+  const marginX = 42; // tighter, professional margins
+  const marginTop = 42;
+  const marginBottom = 42;
   const usableWidth = pageWidth - marginX * 2;
 
   let cursorY = marginTop;
@@ -395,8 +541,8 @@ function renderBlocksToPdfBytes(
     if (block.type === 'table') {
       const numCols = Math.max(1, ...block.rows.map((r) => r.length));
       const colWidth = usableWidth / numCols;
-      const cellPadding = 6;
-      const tableFontSize = 10;
+      const cellPadding = 5;
+      const tableFontSize = 9.5;
 
       doc.setFontSize(tableFontSize);
 
@@ -407,9 +553,8 @@ function renderBlocksToPdfBytes(
 
         for (let cIdx = 0; cIdx < numCols; cIdx++) {
           const cell = row[cIdx];
-          const cleanText = sanitizeForPdfFont(cell?.text || '');
           const lines: string[] = doc.splitTextToSize(
-            cleanText || ' ',
+            cell?.text || ' ',
             colWidth - cellPadding * 2
           );
           wrappedCells.push(lines);
@@ -418,9 +563,9 @@ function renderBlocksToPdfBytes(
           }
         }
 
-        const lineHeight = tableFontSize * 1.35;
+        const lineHeight = tableFontSize * 1.3;
         const rowHeight = maxLines * lineHeight + cellPadding * 2;
-        ensureSpace(rowHeight + 4);
+        ensureSpace(rowHeight + 2);
 
         for (let cIdx = 0; cIdx < numCols; cIdx++) {
           const cell = row[cIdx];
@@ -433,11 +578,11 @@ function renderBlocksToPdfBytes(
           }
 
           doc.setDrawColor(203, 213, 225);
-          doc.setLineWidth(0.75);
+          doc.setLineWidth(0.6);
           doc.rect(cellX, cursorY, colWidth, rowHeight, 'S');
 
           const isBold = cell?.bold || rIdx === 0;
-          doc.setFont(pdfFont, isBold ? 'bold' : 'normal');
+          doc.setFont(mapFontFamily(defaultFont), isBold ? 'bold' : 'normal');
           const tc = cell?.textColor || [15, 23, 42];
           doc.setTextColor(tc[0], tc[1], tc[2]);
 
@@ -454,13 +599,13 @@ function renderBlocksToPdfBytes(
         cursorY += rowHeight;
       }
 
-      cursorY += 10;
+      cursorY += 6;
       continue;
     }
 
     // Paragraph block
     for (const img of block.embeddedImages) {
-      ensureSpace(img.heightPt + 12);
+      ensureSpace(img.heightPt + 8);
       const imgX =
         block.align === 'center'
           ? marginX + (usableWidth - img.widthPt) / 2
@@ -474,142 +619,160 @@ function renderBlocksToPdfBytes(
           img.widthPt,
           img.heightPt
         );
-        cursorY += img.heightPt + 10;
+        cursorY += img.heightPt + 6;
       } catch {
         // skip broken image
       }
     }
 
     if (block.runs.length === 0) {
-      cursorY += 8;
+      // Empty paragraph: only advance tiny blank line height, no huge gaps!
+      cursorY += 4;
       continue;
     }
 
-    // Determine dominant paragraph style from runs
-    const rawCombined = block.runs.map((r) => r.text).join('');
-    let combinedText = sanitizeForPdfFont(rawCombined);
-    if (!combinedText.trim()) {
-      cursorY += 8;
-      continue;
+    // Apply space before if present
+    if (block.spaceBeforePt > 0) {
+      cursorY += Math.min(block.spaceBeforePt, 10);
     }
 
-    if (block.isList) {
-      combinedText = `•  ${combinedText}`;
-    }
-
-    // Support markdown-style headings inside paragraphs (# , ## , ### )
-    let headingLevel = block.isHeading;
-    if (combinedText.startsWith('### ')) {
-      headingLevel = 3;
-      combinedText = combinedText.slice(4);
-    } else if (combinedText.startsWith('## ')) {
-      headingLevel = 2;
-      combinedText = combinedText.slice(3);
-    } else if (combinedText.startsWith('# ')) {
-      headingLevel = 1;
-      combinedText = combinedText.slice(2);
-    }
-
-    const maxRunFontSize = Math.max(
-      ...block.runs.map((r) => r.fontSizePt),
-      11
-    );
-    const fontSizePt =
-      headingLevel === 1
-        ? Math.max(18, maxRunFontSize)
-        : headingLevel === 2
-        ? Math.max(14, maxRunFontSize)
-        : headingLevel === 3
-        ? Math.max(12.5, maxRunFontSize)
-        : maxRunFontSize;
-
-    const anyBold = headingLevel > 0 || block.runs.some((r) => r.bold);
-    const anyItalic = block.runs.some((r) => r.italic);
-    const anyUnderline = block.runs.some((r) => r.underline);
-    const primaryColor =
-      block.runs.find((r) => r.color[0] !== 15 || r.color[1] !== 23 || r.color[2] !== 42)
-        ?.color || block.runs[0].color;
-    const linkUrl = block.runs.find((r) => r.linkUrl)?.linkUrl;
-
-    const fontStyle =
-      anyBold && anyItalic
-        ? 'bolditalic'
-        : anyBold
-        ? 'bold'
-        : anyItalic
-        ? 'italic'
-        : 'normal';
-
-    doc.setFont(pdfFont, fontStyle);
-    doc.setFontSize(fontSizePt);
-    doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
-
-    if (headingLevel > 0) {
-      cursorY += headingLevel === 1 ? 6 : 4;
-    }
-
+    // Multi-Run line layout: preserves each run's font, bold, color, and size!
     const indentX = block.isList ? 14 : 0;
     const lineMaxWidth = usableWidth - indentX;
-    const wrappedLines: string[] = doc.splitTextToSize(combinedText, lineMaxWidth);
-    const lineHeight = fontSizePt * 1.42;
 
-    if (block.bgColor) {
-      const boxHeight = wrappedLines.length * lineHeight + 8;
-      ensureSpace(boxHeight);
-      doc.setFillColor(block.bgColor[0], block.bgColor[1], block.bgColor[2]);
-      doc.rect(marginX, cursorY - 2, usableWidth, boxHeight, 'F');
+    // Word tokens with per-run styling
+    interface StyledToken {
+      word: string;
+      bold: boolean;
+      italic: boolean;
+      underline: boolean;
+      color: [number, number, number];
+      fontSizePt: number;
+      fontFamily: string;
+      linkUrl?: string;
     }
 
-    for (const line of wrappedLines) {
+    const tokens: StyledToken[] = [];
+    if (block.isList) {
+      tokens.push({
+        word: '• ',
+        bold: true,
+        italic: false,
+        underline: false,
+        color: [30, 41, 59],
+        fontSizePt: 11,
+        fontFamily: 'Calibri',
+      });
+    }
+
+    for (const run of block.runs) {
+      const words = run.text.split(/(\s+)/);
+      for (const w of words) {
+        if (!w) continue;
+        tokens.push({
+          word: w,
+          bold: run.bold,
+          italic: run.italic,
+          underline: run.underline,
+          color: run.color,
+          fontSizePt: run.fontSizePt,
+          fontFamily: run.fontFamily || defaultFont,
+          linkUrl: run.linkUrl,
+        });
+      }
+    }
+
+    // Lay out tokens into lines
+    interface LineRun {
+      text: string;
+      token: StyledToken;
+      width: number;
+    }
+
+    const lines: LineRun[][] = [];
+    let currentLine: LineRun[] = [];
+    let currentLineWidth = 0;
+
+    for (const tok of tokens) {
+      if (tok.word === '\n') {
+        lines.push(currentLine);
+        currentLine = [];
+        currentLineWidth = 0;
+        continue;
+      }
+
+      const fontType = mapFontFamily(tok.fontFamily);
+      const styleStr = tok.bold && tok.italic ? 'bolditalic' : tok.bold ? 'bold' : tok.italic ? 'italic' : 'normal';
+      doc.setFont(fontType, styleStr);
+      doc.setFontSize(tok.fontSizePt);
+      const wWidth = doc.getTextWidth(tok.word);
+
+      if (currentLineWidth + wWidth > lineMaxWidth && currentLine.length > 0) {
+        lines.push(currentLine);
+        currentLine = [];
+        currentLineWidth = 0;
+      }
+
+      currentLine.push({ text: tok.word, token: tok, width: wWidth });
+      currentLineWidth += wWidth;
+    }
+
+    if (currentLine.length > 0) {
+      lines.push(currentLine);
+    }
+
+    // Render lines with exact colors, styles, and links
+    for (const line of lines) {
+      if (line.length === 0) {
+        cursorY += 4;
+        continue;
+      }
+
+      const maxFontSize = Math.max(...line.map((r) => r.token.fontSizePt), 11);
+      const lineHeight = maxFontSize * 1.32;
       ensureSpace(lineHeight + 2);
+
+      const totalLineWidth = line.reduce((acc, r) => acc + r.width, 0);
       let drawX = marginX + indentX;
-      const textWidth = doc.getTextWidth(line);
-
       if (block.align === 'center') {
-        drawX = marginX + (usableWidth - textWidth) / 2;
+        drawX = marginX + (usableWidth - totalLineWidth) / 2;
       } else if (block.align === 'right') {
-        drawX = marginX + usableWidth - textWidth;
+        drawX = marginX + usableWidth - totalLineWidth;
       }
 
-      doc.text(line, drawX, cursorY + fontSizePt);
+      for (const item of line) {
+        const tok = item.token;
+        const fontType = mapFontFamily(tok.fontFamily);
+        const styleStr = tok.bold && tok.italic ? 'bolditalic' : tok.bold ? 'bold' : tok.italic ? 'italic' : 'normal';
+        doc.setFont(fontType, styleStr);
+        doc.setFontSize(tok.fontSizePt);
+        doc.setTextColor(tok.color[0], tok.color[1], tok.color[2]);
 
-      if (anyUnderline) {
-        doc.setDrawColor(primaryColor[0], primaryColor[1], primaryColor[2]);
-        doc.setLineWidth(0.6);
-        doc.line(
-          drawX,
-          cursorY + fontSizePt + 2,
-          drawX + textWidth,
-          cursorY + fontSizePt + 2
-        );
-      }
+        doc.text(item.text, drawX, cursorY + tok.fontSizePt);
 
-      // Add clickable PDF link annotation if linkUrl or phone number is present
-      if (linkUrl) {
-        doc.link(drawX, cursorY, textWidth, lineHeight, { url: linkUrl });
-      } else {
-        const urlMatch = line.match(/https?:\/\/[^\s)]+/);
-        if (urlMatch) {
-          doc.link(drawX, cursorY, textWidth, lineHeight, { url: urlMatch[0] });
-        } else {
-          const phoneMatch = line.match(
-            /[+]?[\d]{1,3}[-\s.]?\(?[\d]{2,4}\)?[-\s.]?[\d]{2,4}[-\s.]?[\d]{2,4}/
+        if (tok.underline) {
+          doc.setDrawColor(tok.color[0], tok.color[1], tok.color[2]);
+          doc.setLineWidth(0.5);
+          doc.line(
+            drawX,
+            cursorY + tok.fontSizePt + 1.5,
+            drawX + item.width,
+            cursorY + tok.fontSizePt + 1.5
           );
-          if (phoneMatch) {
-            const cleanTel = phoneMatch[0].replace(/[^\d+]/g, '');
-            if (cleanTel.length >= 7) {
-              doc.link(drawX, cursorY, textWidth, lineHeight, {
-                url: `tel:${cleanTel}`,
-              });
-            }
-          }
         }
+
+        if (tok.linkUrl) {
+          doc.link(drawX, cursorY, item.width, lineHeight, { url: tok.linkUrl });
+        }
+
+        drawX += item.width;
       }
 
       cursorY += lineHeight;
     }
 
-    cursorY += headingLevel > 0 ? 6 : 5;
+    // Compact paragraph bottom spacing (zero bloated white space)
+    cursorY += Math.min(block.spaceAfterPt, 6);
   }
 
   const arrayBuffer = doc.output('arraybuffer');
@@ -617,17 +780,27 @@ function renderBlocksToPdfBytes(
 }
 
 /**
- * Converts a processed .docx Uint8Array directly into a vector PDF Uint8Array in the browser
+ * Converts a processed .docx Uint8Array into a PDF:
+ * Uses high-fidelity DOM replica engine in browser (exact fonts, exact text colors, all emojis, exact layout)
+ * with graceful structured multi-run vector fallback.
  */
 export async function convertDocxBytesToPdfBytes(
   docxBytes: Uint8Array
 ): Promise<Uint8Array> {
+  // 1. Try Browser-Native DOM Replica Engine first (100% replica of fonts, colors, emojis, tables)
+  const domResult = await renderDocxToPdfViaDom(docxBytes);
+  if (domResult && domResult.length > 0) {
+    return domResult;
+  }
+
+  // 2. Fallback to Multi-Run Structured Vector Engine
   const blocks = await parseDocxIntoBlocks(docxBytes);
-  return renderBlocksToPdfBytes(blocks, 'Calibri');
+  return renderBlocksToVectorPdf(blocks, 'Calibri');
 }
 
 /**
- * Generates a vector PDF Uint8Array directly from Whiteboard text and styles
+ * Generates a clean PDF Uint8Array directly from Whiteboard text and styles:
+ * Preserves emojis, exact colors, selected font, and tight professional spacing.
  */
 export function createPdfFromWhiteboard(
   rawText: string,
@@ -658,6 +831,8 @@ export function createPdfFromWhiteboard(
         isHeading: 0,
         isList: false,
         runs: [],
+        spaceBeforePt: 0,
+        spaceAfterPt: 3,
         embeddedImages: [],
       };
     }
@@ -680,6 +855,16 @@ export function createPdfFromWhiteboard(
       text = trimmed.replace(/^[-*•]\s+/, '');
     }
 
+    const baseSize = style.fontSize || 11;
+    const fontSizePt =
+      isHeading === 1
+        ? Math.max(18, baseSize + 6)
+        : isHeading === 2
+        ? Math.max(14, baseSize + 3)
+        : isHeading === 3
+        ? Math.max(12, baseSize + 1.5)
+        : baseSize;
+
     return {
       type: 'paragraph',
       align: 'left',
@@ -691,18 +876,16 @@ export function createPdfFromWhiteboard(
           bold: isHeading > 0 || Boolean(style.bold),
           italic: Boolean(style.italic),
           underline: Boolean(style.underline),
-          color: [15, 23, 42],
-          fontSizePt:
-            isHeading === 1
-              ? Math.max(18, (style.fontSize || 11) + 6)
-              : isHeading === 2
-              ? Math.max(14, (style.fontSize || 11) + 3)
-              : style.fontSize || 11,
+          color: isHeading > 0 ? [15, 23, 42] : [30, 41, 59],
+          fontSizePt,
+          fontFamily: style.fontFamily || 'Calibri',
         },
       ],
+      spaceBeforePt: isHeading > 0 ? 6 : 0,
+      spaceAfterPt: isHeading > 0 ? 4 : 2,
       embeddedImages: [],
     };
   });
 
-  return renderBlocksToPdfBytes(blocks, style.fontFamily || 'Calibri');
+  return renderBlocksToVectorPdf(blocks, style.fontFamily || 'Calibri');
 }

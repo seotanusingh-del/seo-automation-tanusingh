@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Plus, Copy, Trash2, Check, Search } from 'lucide-react';
+import { Plus, Copy, Trash2, Check, Search, Loader2 } from 'lucide-react';
 import {
   DEFAULT_AIRLINES,
   replaceAirlineKeywordForGenerator,
@@ -20,6 +20,8 @@ export const AirlineContentGeneratorPanel: React.FC = () => {
   const [rowCounter, setRowCounter] = useState(1);
   const [filterQuery, setFilterQuery] = useState('');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [addedFlash, setAddedFlash] = useState(false);
   const [status, setStatus] = useState(
     'Ready. Enter a header and paragraph. Leave the airline keyword blank for automatic 44-airline replacement.'
   );
@@ -35,38 +37,44 @@ export const AirlineContentGeneratorPanel: React.FC = () => {
       return;
     }
 
-    const newEntries: GeneratedAirlinePage[] = [];
-    let currentId = rowCounter;
+    setIsProcessing(true);
+    setTimeout(() => {
+      const newEntries: GeneratedAirlinePage[] = [];
+      let currentId = rowCounter;
 
-    for (const airline of DEFAULT_AIRLINES) {
-      const generatedHeader = replaceAirlineKeywordForGenerator(
-        cleanHeader,
-        sourceKeyword,
-        airline
-      );
-      const generatedParagraph = replaceAirlineKeywordForGenerator(
-        cleanParagraph,
-        sourceKeyword,
-        airline
-      );
-      newEntries.push({
-        id: currentId,
-        airline,
-        header: generatedHeader,
-        paragraph: generatedParagraph,
-      });
-      currentId += 1;
-    }
+      for (const airline of DEFAULT_AIRLINES) {
+        const generatedHeader = replaceAirlineKeywordForGenerator(
+          cleanHeader,
+          sourceKeyword,
+          airline
+        );
+        const generatedParagraph = replaceAirlineKeywordForGenerator(
+          cleanParagraph,
+          sourceKeyword,
+          airline
+        );
+        newEntries.push({
+          id: currentId,
+          airline,
+          header: generatedHeader,
+          paragraph: generatedParagraph,
+        });
+        currentId += 1;
+      }
 
-    setPages((prev) => [...prev, ...newEntries]);
-    setRowCounter(currentId);
-    setHeaderInput('');
-    setParagraphInput('');
-    setStatus(
-      `Added ${DEFAULT_AIRLINES.length} pages. Total generated pages: ${
-        pages.length + newEntries.length
-      }.`
-    );
+      setPages((prev) => [...prev, ...newEntries]);
+      setRowCounter(currentId);
+      setHeaderInput('');
+      setParagraphInput('');
+      setIsProcessing(false);
+      setAddedFlash(true);
+      setTimeout(() => setAddedFlash(false), 1800);
+      setStatus(
+        `Added ${DEFAULT_AIRLINES.length} pages. Total generated pages: ${
+          pages.length + newEntries.length
+        }.`
+      );
+    }, 150);
   };
 
   const handleCopy = async (key: string, value: string) => {
@@ -149,11 +157,26 @@ export const AirlineContentGeneratorPanel: React.FC = () => {
           </div>
           <button
             type="button"
+            disabled={isProcessing}
             onClick={addPages}
-            className="h-11 px-5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold rounded-lg transition-colors flex items-center justify-center gap-2 whitespace-nowrap shrink-0 cursor-pointer"
+            className="h-11 px-5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition-all flex items-center justify-center gap-2 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
           >
-            <Plus className="w-4 h-4" />
-            <span>Add 44 Airline Pages</span>
+            {isProcessing ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Generating 44 Pages...</span>
+              </>
+            ) : addedFlash ? (
+              <>
+                <Check className="w-4 h-4" />
+                <span>Added 44 Pages!</span>
+              </>
+            ) : (
+              <>
+                <Plus className="w-4 h-4" />
+                <span>Add 44 Airline Pages</span>
+              </>
+            )}
           </button>
         </div>
       </div>

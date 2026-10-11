@@ -65,6 +65,8 @@ function buildTfnTextFragment(tfn: string): string {
     variants.add(`(${a}) ${b}-${c}`);
     variants.add(`${a} ${b} ${c}`);
     variants.add(`+1--(${a})-${b}-${c}`);
+    variants.add(core10);
+    variants.add(`1${core10}`);
   }
 
   const params = Array.from(variants)
@@ -111,7 +113,7 @@ function highlightTfnInText(text: string, tfn: string): React.ReactNode {
     const p3b = core.slice(8, 10);
     const sep = `[-–—\\s._/•⚡*→~()\\[\\]{}+]{0,6}`;
     regex = new RegExp(
-      `((?:\\+?1${sep})?[(\\[{]*${p1}[)\\]}]*${sep}${p2}${sep}${p3a}${sep}${p3b})`,
+      `((?:\\+?1${sep})?[(\\[{]*${p1}[)\\]}]*${sep}${p2}${sep}${p3a}${sep}${p3b}|(?:\\+?1)?${core})`,
       'gi'
     );
   } else {

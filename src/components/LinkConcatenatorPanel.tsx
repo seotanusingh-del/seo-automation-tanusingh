@@ -461,8 +461,15 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
       setStatus('No Data: Add links before exporting to Excel.');
       return;
     }
+    // If specific rows are selected with checkboxes, export only those; otherwise export all rows
+    const selectedRows = rows.filter((r) => r.selected);
+    const targetRows = selectedRows.length > 0 ? selectedRows : rows;
+
     // Export ONLY the concatenated links (one link per row in Column A, no extra columns or headers)
-    const linkOnlyRows = rows.map((r) => [r.result]);
+    const linkOnlyRows = targetRows
+      .map((r) => [String(r.result || '').trim()])
+      .filter((r) => Boolean(r[0]));
+
     const worksheet = XLSX.utils.aoa_to_sheet(linkOnlyRows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Links');
@@ -472,7 +479,9 @@ export const LinkConcatenatorPanel: React.FC<LinkConcatenatorPanelProps> = ({
     );
     setExportedFlash(true);
     setTimeout(() => setExportedFlash(false), 1800);
-    setStatus(`Exported ${rows.length} link(s) to Excel (links only).`);
+    setStatus(
+      `Exported ${linkOnlyRows.length} link(s) to Excel (Column A only, zero extra columns or headers).`
+    );
   };
 
   const syncGoogleSheet = async (silent = false) => {

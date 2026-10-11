@@ -45,6 +45,7 @@ import {
   DEFAULT_REPLACEMENT_WORD,
   DEFAULT_AIRLINES,
   DEFAULT_GOOGLE_DOC_URL,
+  DEFAULT_GOOGLE_SHEET_URL,
   AVAILABLE_LANGUAGES,
   DEFAULT_CREDENTIALS,
   LIBREOFFICE_WEBSITE_URL,
@@ -222,9 +223,12 @@ export default function App() {
   const [generateZip, setGenerateZip] = useState(true);
   const [includeDocxInZip, setIncludeDocxInZip] = useState(false);
 
-  // Google Docs Link State (persisted to localStorage, editable anytime)
+  // Google Docs & Google Sheet Link State (persisted to localStorage, editable anytime)
   const [googleDocUrl, setGoogleDocUrl] = useState<string>(() => {
     return localStorage.getItem('seo_google_doc_url') ?? DEFAULT_GOOGLE_DOC_URL;
+  });
+  const [googleSheetUrl, setGoogleSheetUrl] = useState<string>(() => {
+    return localStorage.getItem('seo_google_sheet_url') ?? DEFAULT_GOOGLE_SHEET_URL;
   });
 
   // Template Attachment State (persisted across accidental tab closes/refreshes)
@@ -429,11 +433,24 @@ export default function App() {
       const res = await fetch('/api/workspace-config', { cache: 'no-store' });
       if (!res.ok) return;
       const cfg = await res.json();
-      if (!cfg || !cfg.updatedAt || cfg.updatedAt <= lastWorkspaceSyncRef.current) {
+      if (!cfg) return;
+
+      const isNewer = Boolean(cfg.updatedAt && cfg.updatedAt > lastWorkspaceSyncRef.current);
+      const docChanged = Boolean(cfg.googleDocUrl && cfg.googleDocUrl !== googleDocUrl);
+      const sheetChanged = Boolean(cfg.googleSheetUrl && cfg.googleSheetUrl !== googleSheetUrl);
+      const credsChanged = Boolean(
+        cfg.credentials?.client_email &&
+        cfg.credentials?.client_email !== credentials.client_email
+      );
+
+      if (!isNewer && !docChanged && !sheetChanged && !credsChanged) {
         return;
       }
-      lastWorkspaceSyncRef.current = cfg.updatedAt;
-      localStorage.setItem('seo_workspace_updated_at', String(cfg.updatedAt));
+
+      if (cfg.updatedAt) {
+        lastWorkspaceSyncRef.current = Math.max(lastWorkspaceSyncRef.current, cfg.updatedAt);
+        localStorage.setItem('seo_workspace_updated_at', String(cfg.updatedAt));
+      }
 
       if (cfg.credentials && cfg.credentials.client_email) {
         setCredentials(cfg.credentials);
@@ -465,7 +482,7 @@ export default function App() {
         setGoogleDocUrl(cfg.googleDocUrl);
         localStorage.setItem('seo_google_doc_url', cfg.googleDocUrl);
 
-        if (incomingDocId !== currentDocId) {
+        if (incomingDocId !== currentDocId || docChanged) {
           // Purge stale template cache when doc URL was changed on another device
           localStorage.removeItem('seo_template_base64');
           localStorage.removeItem('seo_template_name');
@@ -495,6 +512,10 @@ export default function App() {
           setOldTfn(cfg.syncedUniqueTfns.join(', '));
         }
       }
+      if (cfg.googleSheetUrl) {
+        setGoogleSheetUrl(cfg.googleSheetUrl);
+        localStorage.setItem('seo_google_sheet_url', cfg.googleSheetUrl);
+      }
     } catch {
       // ignore offline
     }
@@ -502,18 +523,25 @@ export default function App() {
 
   useEffect(() => {
     void pullGlobalWorkspaceConfig();
-    const onFocus = () => {
+    const handleTrigger = () => {
       void pullGlobalWorkspaceConfig();
     };
-    window.addEventListener('focus', onFocus);
+    window.addEventListener('focus', handleTrigger);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void pullGlobalWorkspaceConfig();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
     const interval = setInterval(() => {
       void pullGlobalWorkspaceConfig();
-    }, 8000);
+    }, 6000);
     return () => {
-      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('focus', handleTrigger);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
       clearInterval(interval);
     };
-  }, []);
+  }, [googleDocUrl, googleSheetUrl, credentials.client_email]);
 
   useEffect(() => {
     checkServerStatus();
@@ -1825,12 +1853,19 @@ export default function App() {
                       type="button"
                       disabled={isGenerating}
                       onClick={() => runGeneration(false)}
-                      className="h-11 px-4 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs sm:text-sm font-semibold rounded-lg transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                      className="h-11 px-4 bg-emerald-600 hover:bg-emerald-700 active:scale-95 disabled:opacity-50 text-white text-xs sm:text-sm font-semibold rounded-lg transition-all flex items-center justify-center gap-2 cursor-pointer shadow-xs"
                     >
-                      <Zap className="w-4 h-4" />
-                      <span>
-                        {isGenerating ? 'Generating...' : 'Generate from Template'}
-                      </span>
+                      {isGenerating ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>Generating PDFs...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Zap className="w-4 h-4" />
+                          <span>Generate from Template</span>
+                        </>
+                      )}
                     </button>
                   </div>
 
@@ -1952,12 +1987,19 @@ export default function App() {
                     type="button"
                     disabled={isGenerating}
                     onClick={() => runGeneration(true)}
-                    className="w-full h-11 px-5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                    className="w-full h-11 px-5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition-all flex items-center justify-center gap-2 cursor-pointer shadow-xs"
                   >
-                    <Zap className="w-4 h-4" />
-                    <span>
-                      {isGenerating ? 'Generating...' : 'Generate from Whiteboard'}
-                    </span>
+                    {isGenerating ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Generating PDFs from Whiteboard...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Zap className="w-4 h-4" />
+                        <span>Generate from Whiteboard</span>
+                      </>
+                    )}
                   </button>
                 </div>
               )}

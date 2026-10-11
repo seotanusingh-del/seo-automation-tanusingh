@@ -113,12 +113,15 @@ function saveWorkspaceConfig(partial: Partial<GlobalWorkspaceConfig>): GlobalWor
     Boolean(partial.googleDocUrl) &&
     extractGoogleDocId(partial.googleDocUrl || '') !==
       extractGoogleDocId(current.googleDocUrl || '');
+  const credsChanged =
+    Boolean(partial.credentials?.client_email) &&
+    partial.credentials?.client_email !== current.credentials.client_email;
 
   const next: GlobalWorkspaceConfig = {
     ...current,
-    ...(docChanged
+    ...(docChanged || credsChanged
       ? {
-          syncedDocId: extractGoogleDocId(partial.googleDocUrl || ''),
+          syncedDocId: extractGoogleDocId(partial.googleDocUrl || current.googleDocUrl || ''),
           syncedDocText: '',
           syncedDocBase64: '',
           syncedFoundAirlines: [],
@@ -1182,23 +1185,36 @@ function checkTextContainsTfn(text: string, tfn: string, tfnRegex: RegExp | null
     targetDigits.length === 11 && targetDigits.startsWith('1')
       ? targetDigits.slice(1)
       : targetDigits;
-  if (core10.length >= 7) {
+
+  // 1. Direct digit-stream matching (catches numbers in URLs like .../8668574025_fly.pdf or 18668574025)
+  const textDigits = cleanText.replace(/\D/g, '');
+  if (core10.length === 10 && textDigits.includes(core10)) return true;
+  if (targetDigits.length >= 7 && textDigits.includes(targetDigits)) return true;
+
+  // 2. Decoded URL checking
+  try {
+    const decoded = decodeURIComponent(cleanText);
+    const decodedDigits = decoded.replace(/\D/g, '');
+    if (core10.length === 10 && decodedDigits.includes(core10)) return true;
+    if (targetDigits.length >= 7 && decodedDigits.includes(targetDigits)) return true;
+    if (tfnRegex) {
+      tfnRegex.lastIndex = 0;
+      if (tfnRegex.test(decoded)) return true;
+    }
+  } catch {
+    // ignore
+  }
+
+  // 3. Flexible separator regex (supports underscores, hyphens, dots, slashes, spaces)
+  if (core10.length === 10) {
     const p1 = core10.slice(0, 3);
     const p2 = core10.slice(3, 6);
     const p3 = core10.slice(6, 10);
-    // Check decoded URL or compact digit sequences
-    try {
-      const decoded = decodeURIComponent(cleanText);
-      if (tfnRegex) {
-        tfnRegex.lastIndex = 0;
-        if (tfnRegex.test(decoded)) return true;
-      }
-    } catch {
-      // ignore
-    }
-    const looseRegex = new RegExp(`${p1}[^0-9a-zA-Z]{0,8}${p2}[^0-9a-zA-Z]{0,8}${p3}`, 'i');
-    if (looseRegex.test(cleanText)) return true;
+    const flexSep = '[-_\\s./+~%]*';
+    const flexRegex = new RegExp(`(?:1${flexSep})?${p1}${flexSep}${p2}${flexSep}${p3}`, 'i');
+    if (flexRegex.test(cleanText)) return true;
   }
+
   return false;
 }
 
